@@ -140,6 +140,7 @@ class Controllerz1(app_manager.RyuApp):
     def _packet_in_handler(self, ev):
         # If you hit this you might want to increase
         # the "miss_send_length" of your switch
+        global net
         global known_hosts
         global mac_to_port
         global flows
@@ -154,9 +155,30 @@ class Controllerz1(app_manager.RyuApp):
 
         pkt = packet.Packet(msg.data)
         eth = pkt.get_protocols(ethernet.ethernet)[0]
-        #if eth.ethertype == ether_types.ETH_TYPE_LLDP:
-            # ignore lldp packet
-        #    return
+        if eth.ethertype != ether_types.ETH_TYPE_LLDP:
+            switch_list = get_switch(self, None)   
+            switches=[switch.dp.id for switch in switch_list]
+            net.add_nodes_from(switches)
+            
+            #print "**********List of switches"
+            #for switch in switch_list:
+            #self.ls(switch)
+            #print switch
+            #self.nodes[self.no_of_nodes] = switch
+            #self.no_of_nodes += 1
+        
+            links_list = get_link(self, None)
+            #print links_list
+            links=[(link.src.dpid,link.dst.dpid,{'port':link.src.port_no}) for link in links_list]
+            #print links
+            net.add_edges_from(links)
+            links=[(link.dst.dpid,link.src.dpid,{'port':link.dst.port_no}) for link in links_list]
+            #print links
+            net.add_edges_from(links)
+            print("**********List of links")
+            print(net.edges())
+        
+        
 
         #Parser for host-request packet
         if eth.ethertype == 4369:
@@ -208,36 +230,7 @@ class Controllerz1(app_manager.RyuApp):
                                   in_port=in_port, actions=actions, data=data)
         datapath.send_msg(out)
 
-    @set_ev_cls(event.EventSwitchEnter)
-    def get_topology_data(self, ev):
-        # The Function get_switch(self, None) outputs the list of switches.
-        topo_raw_switches = copy.copy(get_switch(self, None))
-        # The Function get_link(self, None) outputs the list of links.
-        topo_raw_links = copy.copy(get_link(self, None))
-
-        """
-        Now you have saved the links and switches of the topo. So you could do all sort of stuf with them. 
-        """
-
-        print(" \t" + "Current Links:")
-        for l in topo_raw_links:
-            print (" \t\t" + str(l))
-
-        print(" \t" + "Current Switches:")
-        for s in topo_raw_switches:
-            print (" \t\t" + str(s))
-        """global switches,links
-        print("Here")
-        switch_list = get_switch(self.topology_api_app, None)
-        switches=[switch.dp.id for switch in switch_list]
-        links_list = get_link(self.topology_api_app, None)
-        links=[(link.src.dpid,link.dst.dpid,{'port':link.src.port_no}) for link in links_list]
-        #links=[(link.dst.dpid,link.src.dpid,{'port':link.dst.port_no}) for link in links_list]
-        print("*** Current Switch")
-        print(switches)
-        
-        print("*** Current Links")
-        print(links)"""
+    
 
 
     
