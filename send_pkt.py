@@ -2,7 +2,7 @@ import socket
 import netifaces
 
 s = socket.socket(socket.AF_PACKET, socket.SOCK_RAW)
-s.bind(("eth0",0x1111,socket.PACKET_BROADCAST))
+s.bind(("h1-eth1",0x1111,socket.PACKET_BROADCAST))
 eth_type = bytes.fromhex("1111")
 mac_dst = bytes.fromhex("F" * 12)
 mac_src = bytes.fromhex("000000000001")

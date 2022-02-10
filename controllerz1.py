@@ -26,14 +26,12 @@ from zenoh import Reliability, SubMode
 import copy
 
 
-def topology_mod_listener(sample):
-    global session,flows,mode
-    session.put(basekey+f"/flows/{CONTROLLER_NO}/{mode}",json.dumps(flows))
-    
-        
-        
-def known_host_listener(hosts):
-    
+def topology_update(dummy):
+    global session,flows,mode,modes
+    session.put(basekey+f"/flows/{zone}/{mode}",json.dumps(flows))
+    mode = modes[1]
+
+def known_hosts_update(hosts):
     global known_hosts
     kh = json.loads(hosts.payload.decode("utf-8"))
     for host in kh:
@@ -42,6 +40,14 @@ def known_host_listener(hosts):
     print("C1 Updated kh")
     print(known_hosts)
 
+    
+def listener_dispatcher(msg):
+    if str(msg.key_expr)=="sdn/host-pkt":
+        topology_update(msg)
+    elif str(msg.key_expr)=="sdn/known_hosts":
+        known_hosts_update(msg)
+        
+
 CONTROLLER_NO = 1   
 
 conf = zenoh.Config()
@@ -49,13 +55,13 @@ basekey = "sdn/"
 zenoh.init_logger()
 session = zenoh.open(conf)
 
-sub = session.subscribe(basekey+"host-pkt/**",topology_mod_listener,reliability=Reliability.Reliable, mode=SubMode.Push)
-sub = session.subscribe(basekey+"known_hosts/**",known_host_listener,reliability=Reliability.Reliable, mode=SubMode.Push)
+sub = session.subscribe(basekey+"**",listener_dispatcher,reliability=Reliability.Reliable, mode=SubMode.Push)
+
 
 
 mac_to_port = {}
-
-mode = "stdnetwork"
+modes=["stdnetwork","prioritynetwork"]
+mode = modes[0]
 net=nx.DiGraph()
 nodes = {}
 links = {}
@@ -63,7 +69,8 @@ switches = {}
 no_of_nodes = 0
 no_of_links = 0
 i=0
-known_hosts = {'00:00:00:00:00:01':1,'00:00:00:00:00:02':1}
+zone = 1
+known_hosts = {'00:00:00:00:00:01':1,'00:00:00:00:00:02':1} #mac:zone
 border_switch=[1]
 border_gw = {2:1,3:1} #to zone %d use dpid %d
 flows = {}
@@ -137,15 +144,8 @@ class Controllerz1(app_manager.RyuApp):
         global mac_to_port
         global flows
         global switches
-        global border_gw,border_switch,flag
+        global border_gw,border_switch,flag,zone
 
-        if flag == 0:
-            self.update_known_hosts()
-            flag = 1
-        
-        if ev.msg.msg_len < ev.msg.total_len:
-            self.logger.debug("packet truncated: only %s of %s bytes",
-                              ev.msg.msg_len, ev.msg.total_len)
         msg = ev.msg
         datapath = msg.datapath
         ofproto = datapath.ofproto
@@ -162,6 +162,29 @@ class Controllerz1(app_manager.RyuApp):
         flows.setdefault(dpid,[])
         out_port = 0
 
+        if flag == 0:
+            self.update_known_hosts()
+            net.add_node('00:00:00:00:00:01')
+            net.add_edge(self.to_dpid(5),'00:00:00:00:00:01',port=3)
+            net.add_edge('00:00:00:00:00:01',self.to_dpid(5))
+
+            net.add_node('00:00:00:00:00:02')
+            net.add_edge(self.to_dpid(6),'00:00:00:00:00:02',port=3)
+            net.add_edge('00:00:00:00:00:02',self.to_dpid(6))
+
+            match = parser.OFPMatch(eth_type=0x1111)
+            actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER,
+                                          ofproto.OFPCML_NO_BUFFER)]
+            self.add_flow(datapath, 0, match, actions)
+            flows[dpid].append([datapath,1,match,actions])
+
+            flag = 1
+        
+        if ev.msg.msg_len < ev.msg.total_len:
+            self.logger.debug("packet truncated: only %s of %s bytes",
+                              ev.msg.msg_len, ev.msg.total_len)
+        
+
 
         self.topo_discovery()
         
@@ -173,31 +196,44 @@ class Controllerz1(app_manager.RyuApp):
         
 
         if src not in net:
-            net.add_node(src)
-            net.add_edge(dpid,src,port=in_port)
-            net.add_edge(src,dpid)
+            if src in known_hosts and known_hosts[src]==zone:
+
+                net.add_node(src)
+                net.add_edge(dpid,src,port=in_port)
+                net.add_edge(src,dpid)
         
         if dst in net and src in net:
-            print(1)
+            
             path=nx.shortest_path(net,src,dst)
             if dpid not in path:
                 return
+            #print(f"{src} -> {dst} use path {path}")
             next=path[path.index(dpid)+1]
             out_port=net[dpid][next]['port']
         elif src not in net and dst in net:
             if src in known_hosts:
-                print(2)
                 path=nx.shortest_path(net,dpid,dst)
+                #print(f"{src} -> {dst} use path {path}")
                 next=path[path.index(dpid)+1]
                 out_port=net[dpid][next]['port']
             else:
                 out_port = ofproto.OFPP_FLOOD
         elif src in net and dst not in net:
             if dst in known_hosts:
-                print(3)
                 path=nx.shortest_path(net,src,self.to_dpid(border_gw[known_hosts[dst]]))
-                print(f"{src} -> {self.to_dpid(border_gw[known_hosts[dst]])} use path {path}")
-                print(path)
+                #print(f"{src} -> {dst} use path {path}")
+                try:
+                    if(path.index(dpid) == len(path)-1) and (datapath.id in border_switch):
+                        return
+                    else:
+                        next=path[path.index(dpid)+1]
+                        out_port=net[dpid][next]['port']
+                except ValueError:
+                    return
+        elif src not in net and dst not in net:
+            if dst in known_hosts and src in known_hosts:
+                path=nx.shortest_path(net,self.to_dpid(border_gw[known_hosts[src]]),self.to_dpid(border_gw[known_hosts[dst]]))
+                #print(f"{src} -> {dst} use path {path}")
                 try:
                     if(path.index(dpid) == len(path)-1) and (datapath.id in border_switch):
                         return
