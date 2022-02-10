@@ -1,17 +1,4 @@
-# Copyright (C) 2011 Nippon Telegraph and Telephone Corporation.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#    http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
-# implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# controller z1
 
 from ryu.base import app_manager
 #from ryu.base.app_manager import send_event
@@ -38,22 +25,33 @@ import zenoh
 from zenoh import Reliability, SubMode
 import copy
 
+
 def topology_mod_listener(sample):
         time = '(not specified)' if sample.source_info is None or sample.timestamp is None else datetime.fromtimestamp(
             sample.timestamp.time)
         print(">> [Subscriber] Received {} ('{}': '{}')"
             .format(sample.kind, sample.key_expr, sample.payload.decode("utf-8"), time))
         print("mac-to-port: ")
-        Controllerz1.discover_topology
         print(flows)
         
-
+def known_host_listener(hosts):
+    
+    global known_hosts
+    kh = json.loads(hosts.payload.decode("utf-8"))
+    for host in kh:
+        if kh[host] not in known_hosts:
+            known_hosts[host] = kh[host]
+    print("C1 Updated kh")
+    print(known_hosts)
+    
 
 conf = zenoh.Config()
 basekey = "sdn/"
 zenoh.init_logger()
 session = zenoh.open(conf)
-sub = session.subscribe(basekey+"**",topology_mod_listener,reliability=Reliability.Reliable, mode=SubMode.Push)
+
+sub = session.subscribe(basekey+"host-pkt/**",topology_mod_listener,reliability=Reliability.Reliable, mode=SubMode.Push)
+sub = session.subscribe(basekey+"known_hosts/**",known_host_listener,reliability=Reliability.Reliable, mode=SubMode.Push)
 
 
 mac_to_port = {}
@@ -65,10 +63,14 @@ switches = {}
 no_of_nodes = 0
 no_of_links = 0
 i=0
-known_hosts = {}
+known_hosts = {'00:00:00:00:00:01':1,'00:00:00:00:00:02':1}
+border_switch=[1]
+border_gw = {2:1,3:1} #to zone %d use dpid %d
 flows = {}
-fast_slice = {1:{1:4,2:4,3:4,4:3},5:{},6:{}}
-slow_slice = {1:{},5:{},6:{}}
+flag = 0
+
+
+
 
 
 
@@ -79,6 +81,7 @@ class Controllerz1(app_manager.RyuApp):
     def __init__(self, *args, **kwargs):
         super(Controllerz1, self).__init__(*args, **kwargs)
         self.topology_api_app = self
+        
         
         
     def discover_topology(self):
@@ -136,6 +139,13 @@ class Controllerz1(app_manager.RyuApp):
                                     match=match, instructions=inst)
         datapath.send_msg(mod)
 
+    def update_known_hosts(self):
+        global session,known_hosts
+        session.put(basekey + "known_hosts", json.dumps(known_hosts) )
+
+    def to_dpid(self,dpid):
+        return format(dpid, "d").zfill(16)
+
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
     def _packet_in_handler(self, ev):
         # If you hit this you might want to increase
@@ -144,6 +154,13 @@ class Controllerz1(app_manager.RyuApp):
         global known_hosts
         global mac_to_port
         global flows
+        global switches
+        global border_gw,border_switch,flag
+
+        if flag == 0:
+            self.update_known_hosts()
+            flag = 1
+        
         if ev.msg.msg_len < ev.msg.total_len:
             self.logger.debug("packet truncated: only %s of %s bytes",
                               ev.msg.msg_len, ev.msg.total_len)
@@ -155,29 +172,30 @@ class Controllerz1(app_manager.RyuApp):
 
         pkt = packet.Packet(msg.data)
         eth = pkt.get_protocols(ethernet.ethernet)[0]
-        if eth.ethertype != ether_types.ETH_TYPE_LLDP:
-            switch_list = get_switch(self, None)   
-            switches=[switch.dp.id for switch in switch_list]
-            net.add_nodes_from(switches)
-            
-            #print "**********List of switches"
-            #for switch in switch_list:
-            #self.ls(switch)
-            #print switch
-            #self.nodes[self.no_of_nodes] = switch
-            #self.no_of_nodes += 1
+
         
-            links_list = get_link(self, None)
-            #print links_list
-            links=[(link.src.dpid,link.dst.dpid,{'port':link.src.port_no}) for link in links_list]
-            #print links
-            net.add_edges_from(links)
-            links=[(link.dst.dpid,link.src.dpid,{'port':link.dst.port_no}) for link in links_list]
-            #print links
-            net.add_edges_from(links)
-            print("**********List of links")
-            print(net.edges())
         
+        switch_list = get_switch(self, None)   
+        switches=[switch.dp.id for switch in switch_list]
+        net.add_nodes_from(switches)
+        
+        #print "**********List of switches"
+        #for switch in switch_list:
+        #self.ls(switch)
+        #print switch
+        #self.nodes[self.no_of_nodes] = switch
+        #self.no_of_nodes += 1
+    
+        links_list = get_link(self, None)
+        links=[(format(link.src.dpid, "d").zfill(16),format(link.dst.dpid, "d").zfill(16),{'port':link.src.port_no}) for link in links_list]
+        net.add_edges_from(links)
+        links=[(format(link.dst.dpid, "d").zfill(16),format(link.src.dpid, "d").zfill(16),{'port':link.dst.port_no}) for link in links_list]
+        net.add_edges_from(links)
+
+        
+        if eth.ethertype == ether_types.ETH_TYPE_LLDP:
+            return
+    
         
 
         #Parser for host-request packet
@@ -187,28 +205,56 @@ class Controllerz1(app_manager.RyuApp):
             w_dest = w[0:2]+':'+w[2:4] + ':'+w[4:6] + ':'+w[6:8] + ':'+w[8:10] + ':'+w[10:12]
             session.put(basekey + "host-pkt", w_dest )
             return
+        #print(net.edges)
         dst = eth.dst
         src = eth.src
         flagl = 0
         flags = 0
         dpid = format(datapath.id, "d").zfill(16)
+        flows.setdefault(dpid,[])
         
-        if src not in known_hosts:
-            known_hosts[src] = "z1"
-            print(known_hosts)
-        mac_to_port.setdefault(dpid, {})
-        flows.setdefault(dpid, [])
-
         #self.logger.info("packet in %s %s %s %s", dpid, src, dst, in_port)
-
+        out_port = 0
         # learn a mac address to avoid FLOOD next time.
-        mac_to_port[dpid][src] = in_port
-
-        if dst in mac_to_port[dpid]:
-            out_port = mac_to_port[dpid][dst]
-        else:
-            out_port = ofproto.OFPP_FLOOD
-
+        if src not in net:
+            net.add_node(src)
+            net.add_edge(dpid,src,port=in_port)
+            net.add_edge(src,dpid)
+        
+        if dst in net and src in net:
+            print(1)
+            path=nx.shortest_path(net,src,dst)
+            if dpid not in path:
+                return
+            next=path[path.index(dpid)+1]
+            out_port=net[dpid][next]['port']
+        elif src not in net and dst in net:
+            if src in known_hosts:
+                print(2)
+                path=nx.shortest_path(net,dpid,dst)
+                next=path[path.index(dpid)+1]
+                out_port=net[dpid][next]['port']
+            else:
+                out_port = ofproto.OFPP_FLOOD
+        elif src in net and dst not in net:
+            if dst in known_hosts:
+                print(3)
+                path=nx.shortest_path(net,src,self.to_dpid(border_gw[known_hosts[dst]]))
+                print(f"{src} -> {self.to_dpid(border_gw[known_hosts[dst]])} use path {path}")
+                print(path)
+                try:
+                    if(path.index(dpid) == len(path)-1) and (datapath.id in border_switch):
+                        return
+                    else:
+                        next=path[path.index(dpid)+1]
+                        out_port=net[dpid][next]['port']
+                except ValueError:
+                    return
+            
+        """else:
+            print("flood")
+            out_port = ofproto.OFPP_FLOOD"""
+        #print(f"out nella porta {out_port}")
         actions = [parser.OFPActionOutput(out_port)]
 
         # install a flow to avoid packet_in next time
@@ -229,6 +275,29 @@ class Controllerz1(app_manager.RyuApp):
         out = parser.OFPPacketOut(datapath=datapath, buffer_id=msg.buffer_id,
                                   in_port=in_port, actions=actions, data=data)
         datapath.send_msg(out)
+
+    @set_ev_cls(event.EventSwitchEnter)
+    def get_topology_data(self, ev):
+        switch_list = get_switch(self, None)   
+        switches=[switch.dp.id for switch in switch_list]
+        net.add_nodes_from(switches)
+        
+        #print "**********List of switches"
+        #for switch in switch_list:
+        #self.ls(switch)
+        #print switch
+        #self.nodes[self.no_of_nodes] = switch
+        #self.no_of_nodes += 1
+    
+        links_list = get_link(self, None)
+        #print links_list
+
+        links=[(format(link.src.dpid, "d").zfill(16),format(link.dst.dpid, "d").zfill(16),{'port':link.src.port_no}) for link in links_list]
+        #print links
+        net.add_edges_from(links)
+        links=[(format(link.dst.dpid, "d").zfill(16),format(link.src.dpid, "d").zfill(16),{'port':link.dst.port_no}) for link in links_list]
+        #print links
+        net.add_edges_from(links)
 
     
 

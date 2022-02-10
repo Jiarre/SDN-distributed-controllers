@@ -86,8 +86,8 @@ def runTopo():
     )
     net.start()
     for i in range(1,9):
-        net['s1'].cmd(f'sudo ovs-vsctl set bridge s{i} stp-enable=true')
-        time.sleep(0.1)
+        """net['s1'].cmd(f'sudo ovs-vsctl set bridge s{i} stp-enable=true')
+        time.sleep(0.1)"""
         net['s1'].cmd(f'sudo ovs-ofctl add-flow s{i} dl_type=0x1111,action=CONTROLLER')
         print(f"avviato il tutto su s{i}")
         time.sleep(0.1)
