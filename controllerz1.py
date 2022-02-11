@@ -55,7 +55,8 @@ basekey = "sdn/"
 zenoh.init_logger()
 session = zenoh.open(conf)
 
-sub = session.subscribe(basekey+"**",listener_dispatcher,reliability=Reliability.Reliable, mode=SubMode.Push)
+sub1 = session.subscribe(basekey+"host-pkt/**",topology_update,reliability=Reliability.Reliable, mode=SubMode.Push)
+sub2 = session.subscribe(basekey+"known_hosts",known_hosts_update,reliability=Reliability.Reliable, mode=SubMode.Push)
 
 
 
