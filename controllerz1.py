@@ -63,6 +63,7 @@ def query_handler(query):
             query.reply(sample)
     if flag == 0:
         query.reply(Sample(key_expr=query.selector, payload="None".encode()))
+
 def to_dpid(n):
     return format(n, "d").zfill(16)
 
@@ -93,7 +94,7 @@ no_of_links = 0
 i=0
 zone = 1
 fast_links = [(to_dpid(5),to_dpid(1)),(to_dpid(1),to_dpid(5)),("00:00:00:00:00:01",to_dpid(5)),(to_dpid(5),"00:00:00:00:00:01")]
-known_hosts = {'00:00:00:00:00:01':1,'00:00:00:00:00:02':1} #mac:zone
+known_hosts = {"00:00:00:00:00:01":{"zone":1, "ip":"10.0.0.1"},"00:00:00:00:00:02":{"zone":1, "ip":"10.0.0.2"}} #mac:zone
 border_switch=[1]
 border_gw = {2:1,3:1} #to zone %d use dpid %d
 flows = {}
@@ -142,7 +143,7 @@ class Controllerz1(app_manager.RyuApp):
         global session,known_hosts
         #session.put(basekey + "known_hosts", json.dumps(known_hosts) )
         for mac in known_hosts:
-            session.put(f"sdn/zone1/hosts/{mac}",str(known_hosts[mac]))
+            session.put(f"sdn/zone1/hosts/{mac}",json.dumps(known_hosts[mac]))
 
     def to_dpid(self,dpid):
         return format(dpid, "d").zfill(16)
@@ -234,7 +235,7 @@ class Controllerz1(app_manager.RyuApp):
                 replies = session.get_collect(f"sdn/{z}/hosts/{src}")
                 for reply in replies:
                     if reply.data.payload.decode("utf-8") != "None":
-                        known_hosts[str(reply.data.key_expr)[-17:]] = int(reply.data.payload.decode("utf-8"))
+                        known_hosts[str(reply.data.key_expr)[-17:]] = json.loads(reply.data.payload.decode("utf-8"))
                     
         
         if dst not in known_hosts:
@@ -242,7 +243,7 @@ class Controllerz1(app_manager.RyuApp):
                 replies = session.get_collect(f"sdn/{z}/hosts/{dst}")
                 for reply in replies:
                     if reply.data.payload.decode("utf-8") != "None":
-                        known_hosts[str(reply.data.key_expr)[-17:]] = int(reply.data.payload.decode("utf-8"))
+                        known_hosts[str(reply.data.key_expr)[-17:]] = json.loads(reply.data.payload.decode("utf-8"))
         if src not in net:
             if src in known_hosts and known_hosts[src]==zone:
 
@@ -276,7 +277,7 @@ class Controllerz1(app_manager.RyuApp):
                 out_port = ofproto.OFPP_FLOOD
         elif src in net and dst not in net:
             if dst in known_hosts:
-                path=nx.shortest_path(net,src,self.to_dpid(border_gw[known_hosts[dst]]),weight='weight')
+                path=nx.shortest_path(net,src,self.to_dpid(border_gw[known_hosts[dst]["zone"]]),weight='weight')
                 #print(f"{src} -> {dst} use path {path}")
                 try:
                     if(path.index(dpid) == len(path)-1) and (datapath.id in border_switch):
@@ -288,7 +289,7 @@ class Controllerz1(app_manager.RyuApp):
                     return
         elif src not in net and dst not in net:
             if dst in known_hosts and src in known_hosts:
-                path=nx.shortest_path(net,self.to_dpid(border_gw[known_hosts[src]]),self.to_dpid(border_gw[known_hosts[dst]]),weight='weight')
+                path=nx.shortest_path(net,self.to_dpid(border_gw[known_hosts[src]["zone"]]),self.to_dpid(border_gw[known_hosts[dst]["zone"]]),weight='weight')
                 #print(f"{src} -> {dst} use path {path}")
                 try:
                     if(path.index(dpid) == len(path)-1) and (datapath.id in border_switch):
