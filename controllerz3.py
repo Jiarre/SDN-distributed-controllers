@@ -22,7 +22,8 @@ from datetime import datetime
 import argparse
 import json
 import zenoh
-from zenoh import Reliability, SubMode
+from zenoh import Reliability, SampleKind, SubMode, Sample, KeyExpr
+from zenoh.queryable import STORAGE
 import copy
 
 
@@ -48,8 +49,30 @@ def listener_dispatcher(msg):
     elif str(msg.key_expr)=="sdn/known_hosts":
         known_hosts_update(msg)
 
-    
+def listener(sample):
+    print(">> [Subscriber3] Received {} ('{}': '{}')"
+          .format(sample.kind, sample.key_expr, sample.payload.decode("utf-8")))
+    if sample.kind == SampleKind.DELETE:
+        store.pop(str(sample.key_expr), None)
+    else:
+        store[str(sample.key_expr)] = (sample.value, sample.source_info)
 
+def query_handler(query):
+    print(">> [Queryable3 ] Received Query '{}'".format(query.selector))
+    replies = []
+    flag = 0
+    for stored_name, (data, source_info) in store.items():
+        if KeyExpr.intersect(query.key_selector, stored_name):
+            flag = 1
+            sample = Sample(stored_name, data)
+            sample.with_source_info(source_info)
+            query.reply(sample)
+    if flag == 0:
+        query.reply(Sample(key_expr=query.selector, payload="None".encode()))
+    
+def to_dpid(n):
+    return format(n, "d").zfill(16)
+    
 conf = zenoh.Config()
 basekey = "sdn/"
 zenoh.init_logger()
@@ -57,9 +80,13 @@ session = zenoh.open(conf)
 sub1 = session.subscribe(basekey+"host-pkt/**",topology_update,reliability=Reliability.Reliable, mode=SubMode.Push)
 sub2 = session.subscribe(basekey+"known_hosts",known_hosts_update,reliability=Reliability.Reliable, mode=SubMode.Push)
 
+store = {}
+sub = session.subscribe("sdn/zone3/hosts/**", listener, reliability=Reliability.Reliable, mode=SubMode.Push)
+queryable = session.queryable("sdn/zone3/hosts/**", STORAGE, query_handler)
+
 mode = "stdnetwork"
 mac_to_port = {}
-    
+zones = ["zone1","zone2"]
 net=nx.DiGraph()
 nodes = {}
 links = {}
@@ -67,6 +94,8 @@ switches = {}
 no_of_nodes = 0
 no_of_links = 0
 i=0
+fast_links = [(to_dpid(8),to_dpid(3)),(to_dpid(3),to_dpid(8)),("00:00:00:00:00:04",to_dpid(8)),(to_dpid(8),"00:00:00:00:00:04")]
+
 known_hosts = {'00:00:00:00:00:03':3,'00:00:00:00:00:04':3}
 border_switch = [3]
 border_gw = {1:3,2:3} #to zone %d use dpid %d
@@ -112,20 +141,30 @@ class Controllerz1(app_manager.RyuApp):
 
     def update_known_hosts(self):
         global session,known_hosts
-        session.put(basekey + "known_hosts", json.dumps(known_hosts) )
+        #session.put(basekey + "known_hosts", json.dumps(known_hosts) )
+        for mac in known_hosts:
+            session.put(f"sdn/zone3/hosts/{mac}",str(known_hosts[mac]))
 
     def to_dpid(self,dpid):
         return format(dpid, "d").zfill(16)
 
     def topo_discovery(self):
+        global fast_links
         switch_list = get_switch(self, None)   
         switches=[switch.dp.id for switch in switch_list]
         net.add_nodes_from(switches)
         links_list = get_link(self, None)
-        links=[(format(link.src.dpid, "d").zfill(16),format(link.dst.dpid, "d").zfill(16),{'port':link.src.port_no}) for link in links_list]
-        net.add_edges_from(links)
-        links=[(format(link.dst.dpid, "d").zfill(16),format(link.src.dpid, "d").zfill(16),{'port':link.dst.port_no}) for link in links_list]
-        net.add_edges_from(links)
+        for link in links_list:
+            fl = (self.to_dpid(link.src.dpid),self.to_dpid(link.dst.dpid))
+            rl = (self.to_dpid(link.dst.dpid),self.to_dpid(link.src.dpid))
+            net.add_edge(format(link.src.dpid, "d").zfill(16),format(link.dst.dpid, "d").zfill(16),port=link.src.port_no)
+            net.add_edge(format(link.dst.dpid, "d").zfill(16),format(link.src.dpid, "d").zfill(16),port=link.dst.port_no)
+            if fl in fast_links or rl in fast_links:
+                net[self.to_dpid(link.src.dpid)][self.to_dpid(link.dst.dpid)]['weight'] = 1
+                net[self.to_dpid(link.dst.dpid)][self.to_dpid(link.src.dpid)]['weight'] = 1
+            else:
+                net[self.to_dpid(link.src.dpid)][self.to_dpid(link.dst.dpid)]['weight'] = 10
+                net[self.to_dpid(link.dst.dpid)][self.to_dpid(link.src.dpid)]['weight'] = 10
     
     def host_pkt_handler(self,msg):
         global session,basekey
@@ -140,7 +179,7 @@ class Controllerz1(app_manager.RyuApp):
         global mac_to_port
         global flows
         global switches
-        global border_gw,border_switch,flag,zone
+        global border_gw,border_switch,flag,zone,fast_links
 
         msg = ev.msg
         datapath = msg.datapath
@@ -189,7 +228,21 @@ class Controllerz1(app_manager.RyuApp):
         if eth.ethertype == 4369:
             self.host_pkt_handler(msg)
             return
+
+        if src not in known_hosts:
+            for z in zones:
+                replies = session.get_collect(f"sdn/{z}/hosts/{src}")
+                for reply in replies:
+                    if reply.data.payload.decode("utf-8") != "None":
+                        known_hosts[str(reply.data.key_expr)[-17:]] = int(reply.data.payload.decode("utf-8"))
+                    
         
+        if dst not in known_hosts:
+            for z in zones:
+                replies = session.get_collect(f"sdn/{z}/hosts/{dst}")
+                for reply in replies:
+                    if reply.data.payload.decode("utf-8") != "None":
+                        known_hosts[str(reply.data.key_expr)[-17:]] = int(reply.data.payload.decode("utf-8"))
 
         if src not in net:
             if src in known_hosts and known_hosts[src]==zone:
@@ -197,6 +250,14 @@ class Controllerz1(app_manager.RyuApp):
                 net.add_node(src)
                 net.add_edge(dpid,src,port=in_port)
                 net.add_edge(src,dpid)
+                fl = (dpid,src)
+                rl = (dpid,src)
+                if fl in fast_links or rl in fast_links:
+                    net[dpid][src]['weight'] = 1
+                    net[src][dpid]['weight'] = 1
+                else:
+                    net[dpid][src]['weight'] = 10
+                    net[src][dpid]['weight'] = 10
         
         if dst in net and src in net:
             path=nx.shortest_path(net,src,dst)
@@ -207,7 +268,7 @@ class Controllerz1(app_manager.RyuApp):
             out_port=net[dpid][next]['port']
         elif src not in net and dst in net:
             if src in known_hosts:
-                path=nx.shortest_path(net,dpid,dst)
+                path=nx.shortest_path(net,dpid,dst,weight='weight')
                 #print(f"{src} -> {dst} use path {path}")
                 next=path[path.index(dpid)+1]
                 out_port=net[dpid][next]['port']
@@ -215,7 +276,7 @@ class Controllerz1(app_manager.RyuApp):
                 out_port = ofproto.OFPP_FLOOD
         elif src in net and dst not in net:
             if dst in known_hosts:
-                path=nx.shortest_path(net,src,self.to_dpid(border_gw[known_hosts[dst]]))
+                path=nx.shortest_path(net,src,self.to_dpid(border_gw[known_hosts[dst]]),weight='weight')
                 #print(f"{src} -> {dst} use path {path}")
                 try:
                     if(path.index(dpid) == len(path)-1) and (datapath.id in border_switch):
@@ -227,7 +288,7 @@ class Controllerz1(app_manager.RyuApp):
                     return
         elif src not in net and dst not in net:
             if dst in known_hosts and src in known_hosts:
-                path=nx.shortest_path(net,self.to_dpid(border_gw[known_hosts[src]]),self.to_dpid(border_gw[known_hosts[dst]]))
+                path=nx.shortest_path(net,self.to_dpid(border_gw[known_hosts[src]]),self.to_dpid(border_gw[known_hosts[dst]]),weight='weight')
                 #print(f"{src} -> {dst} use path {path}")
                 try:
                     if(path.index(dpid) == len(path)-1) and (datapath.id in border_switch):
