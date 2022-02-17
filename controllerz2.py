@@ -29,7 +29,8 @@ import copy
 
 def topology_update(sample):
     global session,flows,mode
-    session.put(basekey+f"/flows/{zone}/{mode}",json.dumps(flows))
+    #session.put(basekey+f"/flows/{zone}/{mode}",json.dumps(flows))
+    print("trigger pkt 2")
 
 def known_hosts_update(hosts):
     
@@ -89,24 +90,123 @@ def query_handler_bs(query):
             sample.with_source_info(source_info)
             query.reply(sample)
     if flag == 0:
-        query.reply(Sample(key_expr="sdn/zone2/BS/*", payload="None".encode()))
+        query.reply(Sample(key_expr=basekey + "/BS/*", payload="None".encode()))
 def to_dpid(n):
     return format(n, "d").zfill(16)
 
+def border_retriever(z):
+        global session,zone,border_gw
+
+        while True:
+            replies = session.get_collect(f"sdn/*/BS/{z}",local_routing=False)
+            for reply in replies:
+                if reply.data.payload.decode("utf-8") != "None":
+                    r = json.loads(reply.data.payload.decode("utf-8"))
+                    if int(r["from"]) in border_gw:
+                        return r
+                    else:
+                        print(f"reaching zone {z} from zone {r['from']}")
+                        z = int(r["from"])
+                        break
+
+def instradate(src,dst,net,datapath):
+    dpid = to_dpid(datapath.id)    
+    if src not in known_hosts:
+        replies = session.get_collect(f"sdn/*/hosts/{src}",local_routing=False)
+        for reply in replies:
+            if reply.data.payload.decode("utf-8") != "None":
+                known_hosts[str(reply.data.key_expr)[-17:]] = json.loads(reply.data.payload.decode("utf-8"))
+                    
+        
+    if dst not in known_hosts:
+        replies = session.get_collect(f"sdn/*/hosts/{dst}",local_routing=False)
+        for reply in replies:
+            if reply.data.payload.decode("utf-8") != "None":
+                known_hosts[str(reply.data.key_expr)[-17:]] = json.loads(reply.data.payload.decode("utf-8"))
+    if src not in net:
+        if src in known_hosts and known_hosts[src]==zone:
+
+            net.add_node(src)
+            net.add_edge(dpid,src,port=in_port)
+            net.add_edge(src,dpid)
+            fl = (dpid,src)
+            rl = (dpid,src)
+            if fl in fast_links or rl in fast_links:
+                net[dpid][src]['weight'] = 1
+                net[src][dpid]['weight'] = 1
+            else:
+                net[dpid][src]['weight'] = 10
+                net[src][dpid]['weight'] = 10
+    
+    if dst in net and src in net:
+        
+        path=nx.shortest_path(net,src,dst,weight='weight')
+        if dpid not in path:
+            return
+        #print(f"{src} -> {dst} use path {path}")
+        next=path[path.index(dpid)+1]
+        out_port=net[dpid][next]['port']
+    elif src not in net and dst in net:
+        if src in known_hosts:
+            path=nx.shortest_path(net,dpid,dst)
+            #print(f"{src} -> {dst} use path {path}")
+            next=path[path.index(dpid)+1]
+            out_port=net[dpid][next]['port']
+        else:
+            out_port = ofproto.OFPP_FLOOD
+    elif src in net and dst not in net:
+        if dst in known_hosts:
+            if known_hosts[dst]["zone"] not in border_gw:
+                r = border_retriever(known_hosts[dst]["zone"])
+                border_gw[known_hosts[dst]["zone"]] = border_gw[int(r["from"])]
+                session.put(basekey + f"/BS/{known_hosts[dst]['zone']}",json.dumps({"via":border_gw[int(r["from"])],"from":r["from"]}))
+                
+            path=nx.shortest_path(net,src,to_dpid(border_gw[known_hosts[dst]["zone"]]),weight='weight')
+            #print(f"{src} -> {dst} use path {path}")
+            try:
+                if(path.index(dpid) == len(path)-1) and (datapath.id in border_switch):
+                    return 0
+                else:
+                    next=path[path.index(dpid)+1]
+                    out_port=net[dpid][next]['port']
+            except ValueError:
+                return
+    elif src not in net and dst not in net:
+        if dst in known_hosts and src in known_hosts:
+            if known_hosts[dst]["zone"] not in border_gw:
+                r = border_retriever(known_hosts[dst]["zone"])
+                border_gw[known_hosts[dst]["zone"]] = border_gw[int(r["from"])]
+                session.put(basekey + f"/BS/{known_hosts[dst]['zone']}",json.dumps({"via":border_gw[int(r["from"])],"from":r["from"]}))
+            if known_hosts[src]["zone"] not in border_gw:
+                r = border_retriever(known_hosts[dst]["zone"])
+                border_gw[known_hosts[dst]["zone"]] = border_gw[int(r["from"])]
+                session.put(basekey + f"/BS/{known_hosts[dst]['zone']}",json.dumps({"via":border_gw[int(r["from"])],"from":r["from"]}))
+            path=nx.shortest_path(net,to_dpid(border_gw[known_hosts[src]["zone"]]),to_dpid(border_gw[known_hosts[dst]["zone"]]),weight='weight')
+            #print(f"{src} -> {dst} use path {path}")
+            try:
+                if(path.index(dpid) == len(path)-1) and (datapath.id in border_switch):
+                    return 0
+                else:
+                    next=path[path.index(dpid)+1]
+                    out_port=net[dpid][next]['port']
+            except ValueError:
+                return
+    return out_port
+
 conf = zenoh.Config()
-basekey = "sdn/"
+basekey = "sdn/zone2"
 zenoh.init_logger()
 session = zenoh.open(conf)
 sub1 = session.subscribe(basekey+"host-pkt/**",topology_update,reliability=Reliability.Reliable, mode=SubMode.Push)
 sub2 = session.subscribe(basekey+"known_hosts",known_hosts_update,reliability=Reliability.Reliable, mode=SubMode.Push)
 
 store_bs = {}
-sub_bs = session.subscribe("sdn/zone2/BS/**", listener_bs, reliability=Reliability.Reliable, mode=SubMode.Push)
-queryable_bs = session.queryable("sdn/zone2/BS/**", STORAGE, query_handler_bs)
+sub_bs = session.subscribe(basekey + "/BS/**", listener_bs, reliability=Reliability.Reliable, mode=SubMode.Push)
+queryable_bs = session.queryable(basekey + "/BS/**", STORAGE, query_handler_bs)
 
 store = {}
-sub = session.subscribe("sdn/zone2/hosts/**", listener, reliability=Reliability.Reliable, mode=SubMode.Push)
-queryable = session.queryable("sdn/zone2/hosts/**", STORAGE, query_handler_bs)
+sub = session.subscribe(basekey + "/hosts/**", listener, reliability=Reliability.Reliable, mode=SubMode.Push)
+queryable = session.queryable(basekey + "/hosts/**", STORAGE, query_handler_bs)
 zones = ["zone1","zone3"]
 mac_to_port = {}
 mode = "stdnetwork"
@@ -122,8 +222,8 @@ i=0
 known_hosts = {}
 border_switch = [1,3]
 border_gw = {1:1,3:3} #to zone %d use dpid %d
-session.put("sdn/zone2/BS/1",json.dumps({"via":"1","from":"2"}))
-session.put("sdn/zone2/BS/3",json.dumps({"via":"3","from":"2"}))
+session.put(basekey + "/BS/1",json.dumps({"via":"1","from":"2"}))
+session.put(basekey + "/BS/3",json.dumps({"via":"3","from":"2"}))
 flows = {}
 flag = 0
 zone=2
@@ -169,7 +269,7 @@ class Controllerz1(app_manager.RyuApp):
         global session,known_hosts
         #session.put(basekey + "known_hosts", json.dumps(known_hosts) )
         for mac in known_hosts:
-            session.put(f"sdn/zone2/hosts/{mac}",json.dumps(known_hosts[mac]))
+            session.put(basekey + f"/hosts/{mac}",json.dumps(known_hosts[mac]))
 
     def to_dpid(self,dpid):
         return format(dpid, "d").zfill(16)
@@ -262,91 +362,11 @@ class Controllerz1(app_manager.RyuApp):
             self.host_pkt_handler(msg)
             return
         
-        if src not in known_hosts:
-            
-            replies = session.get_collect(f"sdn/*/hosts/{src}",local_routing=False)
-            for reply in replies:
-                if reply.data.payload.decode("utf-8") != "None":
-                    known_hosts[str(reply.data.key_expr)[-17:]] = json.loads(reply.data.payload.decode("utf-8"))
-                    
-        
-        if dst not in known_hosts:
-            replies = session.get_collect(f"sdn/*/hosts/{dst}",local_routing=False)
-            for reply in replies:
-                if reply.data.payload.decode("utf-8") != "None":
-                    known_hosts[str(reply.data.key_expr)[-17:]] = json.loads(reply.data.payload.decode("utf-8"))
-
-        if src not in net:
-            if src in known_hosts and known_hosts[src]==zone:
-
-                net.add_node(src)
-                net.add_edge(dpid,src,port=in_port)
-                net.add_edge(src,dpid)
-                fl = (dpid,src)
-                rl = (dpid,src)
-                if fl in fast_links or rl in fast_links:
-                    net[dpid][src]['weight'] = 1
-                    net[src][dpid]['weight'] = 1
-                else:
-                    net[dpid][src]['weight'] = 10
-                    net[src][dpid]['weight'] = 10
-        
-        if dst in net and src in net:
-            path=nx.shortest_path(net,src,dst,weight='weight')
-            if dpid not in path:
-                return
-            #print(f"{src} -> {dst} use path {path}")
-            next=path[path.index(dpid)+1]
-            out_port=net[dpid][next]['port']
-        elif src not in net and dst in net:
-            if src in known_hosts:
-                path=nx.shortest_path(net,dpid,dst)
-                #print(f"{src} -> {dst} use path {path}")
-                next=path[path.index(dpid)+1]
-                out_port=net[dpid][next]['port']
-            else:
-                out_port = ofproto.OFPP_FLOOD
-        elif src in net and dst not in net:
-            if dst in known_hosts:
-                if known_hosts[dst]["zone"] not in border_gw:
-                    r = self.border_retriever(known_hosts[dst]["zone"])
-                    border_gw[known_hosts[dst]["zone"]] = border_gw[int(r["from"])]
-                    session.put(f"sdn/zone2/BS/{known_hosts[dst]['zone']}",json.dumps({"via":border_gw[int(r["from"])],"from":r["from"]}))
-                 
-                path=nx.shortest_path(net,src,self.to_dpid(border_gw[known_hosts[dst]["zone"]]),weight='weight')
-                #print(f"{src} -> {dst} use path {path}")
-                try:
-                    if(path.index(dpid) == len(path)-1) and (datapath.id in border_switch):
-                        return
-                    else:
-                        next=path[path.index(dpid)+1]
-                        out_port=net[dpid][next]['port']
-                except ValueError:
-                    return
-        elif src not in net and dst not in net:
-            if dst in known_hosts and src in known_hosts:
-                if known_hosts[dst]["zone"] not in border_gw:
-                    r = self.border_retriever(known_hosts[dst]["zone"])
-                    border_gw[known_hosts[dst]["zone"]] = border_gw[int(r["from"])]
-                    session.put(f"sdn/zone2/BS/{known_hosts[dst]['zone']}",json.dumps({"via":border_gw[int(r["from"])],"from":r["from"]}))
-                if known_hosts[src]["zone"] not in border_gw:
-                    r = self.border_retriever(known_hosts[dst]["zone"])
-                    border_gw[known_hosts[dst]["zone"]] = border_gw[int(r["from"])]
-                    session.put(f"sdn/zone2/BS/{known_hosts[dst]['zone']}",json.dumps({"via":border_gw[int(r["from"])],"from":r["from"]}))
-                path=nx.shortest_path(net,self.to_dpid(border_gw[known_hosts[src]["zone"]]),self.to_dpid(border_gw[known_hosts[dst]["zone"]]),weight='weight')
-                #print(f"{src} -> {dst} use path {path}")
-                try:
-                    if(path.index(dpid) == len(path)-1) and (datapath.id in border_switch):
-                        return
-                    else:
-                        next=path[path.index(dpid)+1]
-                        out_port=net[dpid][next]['port']
-                except ValueError:
-                    return
+        out_port = instradate(src,dst,net,datapath)
 
 
         actions = [parser.OFPActionOutput(out_port)]
-        if out_port != ofproto.OFPP_FLOOD and (flagl==0 and flags==0):
+        if out_port != ofproto.OFPP_FLOOD and (flagl==0 and flags==0) and out_port != 0:
             match = parser.OFPMatch(in_port=in_port, eth_dst=dst, eth_src=src)
             if msg.buffer_id != ofproto.OFP_NO_BUFFER:
                 self.add_flow(datapath, 1, match, actions, msg.buffer_id)
