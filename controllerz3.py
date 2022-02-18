@@ -111,19 +111,28 @@ def border_retriever(z):
                         break
 
 def instradate(src,dst,net,datapath):
-    dpid = to_dpid(datapath.id)    
+    dpid = to_dpid(datapath.id)
+    src_zone = zone
+    dst_zone = zone
+    out_port = 0
     if src not in known_hosts:
         replies = session.get(f"sdn/*/hosts/{src}",local_routing=False)
         for reply in replies:
             if reply.data.payload.decode("utf-8") != "None":
-                known_hosts[str(reply.data.key_expr)[-17:]] = json.loads(reply.data.payload.decode("utf-8"))
+                #known_hosts[str(reply.data.key_expr)[-17:]] = json.loads(reply.data.payload.decode("utf-8"))
+                tmp = json.loads(reply.data.payload.decode("utf-8"))
+                src_zone = tmp["zone"]
+                print(src_zone)
                     
         
     if dst not in known_hosts:
         replies = session.get(f"sdn/*/hosts/{dst}",local_routing=False)
         for reply in replies:
             if reply.data.payload.decode("utf-8") != "None":
-                known_hosts[str(reply.data.key_expr)[-17:]] = json.loads(reply.data.payload.decode("utf-8"))
+                tmp = json.loads(reply.data.payload.decode("utf-8"))
+                dst_zone = tmp["zone"]
+                print(dst_zone)
+                print(border_gw)
     if src not in net:
         if src in known_hosts and known_hosts[src]==zone:
 
@@ -148,50 +157,49 @@ def instradate(src,dst,net,datapath):
         next=path[path.index(dpid)+1]
         out_port=net[dpid][next]['port']
     elif src not in net and dst in net:
-        if src in known_hosts:
-            path=nx.shortest_path(net,dpid,dst)
-            print(f"{src} -> {dst} use path {path}")
-            next=path[path.index(dpid)+1]
-            out_port=net[dpid][next]['port']
-        else:
-            out_port = ofproto.OFPP_FLOOD
+        path=nx.shortest_path(net,dpid,dst)
+        print(f"{src} -> {dst} use path {path}")
+        next=path[path.index(dpid)+1]
+        out_port=net[dpid][next]['port']
+
     elif src in net and dst not in net:
-        if dst in known_hosts:
-            if known_hosts[dst]["zone"] not in border_gw:
-                r = border_retriever(known_hosts[dst]["zone"])
-                border_gw[known_hosts[dst]["zone"]] = border_gw[int(r["from"])]
-                session.put(basekey + f"/BS/{known_hosts[dst]['zone']}",json.dumps({"via":border_gw[int(r["from"])],"from":r["from"]}))
-                
-            path=nx.shortest_path(net,src,border_gw[known_hosts[dst]["zone"]],weight='weight')
-            print(f"{src} -> {dst} use path {path}")
-            try:
-                if(path.index(dpid) == len(path)-1) and (datapath.id in border_switch):
-                    return 0
-                else:
-                    next=path[path.index(dpid)+1]
-                    out_port=net[dpid][next]['port']
-            except ValueError:
-                return
+        
+        if dst_zone not in border_gw:
+            r = border_retriever(dst_zone)
+            print(r)
+            border_gw[dst_zone] = border_gw[int(r["from"])]
+            session.put(basekey + f"/BS/{dst_zone}",json.dumps({"via":border_gw[int(r["from"])],"from":r["from"]}))
+            
+        path=nx.shortest_path(net,src,border_gw[dst_zone],weight='weight')
+        print(f"{src} -> {dst} use path {path}")
+        try:
+            if(path.index(dpid) == len(path)-1) and (datapath.id in border_switch):
+                return 0
+            else:
+                next=path[path.index(dpid)+1]
+                out_port=net[dpid][next]['port']
+        except ValueError:
+            return
     elif src not in net and dst not in net:
-        if dst in known_hosts and src in known_hosts:
-            if known_hosts[dst]["zone"] not in border_gw:
-                r = border_retriever(known_hosts[dst]["zone"])
-                border_gw[known_hosts[dst]["zone"]] = border_gw[int(r["from"])]
-                session.put(basekey + f"/BS/{known_hosts[dst]['zone']}",json.dumps({"via":border_gw[int(r["from"])],"from":r["from"]}))
-            if known_hosts[src]["zone"] not in border_gw:
-                r = border_retriever(known_hosts[dst]["zone"])
-                border_gw[known_hosts[dst]["zone"]] = border_gw[int(r["from"])]
-                session.put(basekey + f"/BS/{known_hosts[dst]['zone']}",json.dumps({"via":border_gw[int(r["from"])],"from":r["from"]}))
-            path=nx.shortest_path(net,dpid,border_gw[known_hosts[dst]["zone"]],weight='weight')
-            print(f"{src} -> {dst} use path {path}")
-            try:
-                if(path.index(dpid) == len(path)-1) and (datapath.id in border_switch):
-                    return 0
-                else:
-                    next=path[path.index(dpid)+1]
-                    out_port=net[dpid][next]['port']
-            except ValueError:
-                return
+        
+        if dst_zone not in border_gw:
+            r = border_retriever(dst_zone)
+            border_gw[dst_zone] = border_gw[int(r["from"])]
+            session.put(basekey + f"/BS/{dst_zone}",json.dumps({"via":border_gw[int(r["from"])],"from":r["from"]}))
+        if src_zone not in border_gw:
+            r = border_retriever(dst_zone)
+            border_gw[dst_zone] = border_gw[int(r["from"])]
+            session.put(basekey + f"/BS/{src_zone}",json.dumps({"via":border_gw[int(r["from"])],"from":r["from"]}))
+        path=nx.shortest_path(net,dpid,border_gw[dst_zone],weight='weight')
+        print(f"{src} -> {dst} use path {path}")
+        try:
+            if(path.index(dpid) == len(path)-1) and (datapath.id in border_switch):
+                return 0
+            else:
+                next=path[path.index(dpid)+1]
+                out_port=net[dpid][next]['port']
+        except ValueError:
+            return
     return out_port
     
 conf = zenoh.Config()
