@@ -93,28 +93,28 @@ def border_retriever(z):
         global session,zone,border_gw
 
         while True:
-            replies = session.get_collect(f"sdn/*/BS/{z}",local_routing=False)
+            replies = session.get(f"sdn/*/BS/{z}",local_routing=False)
             for reply in replies:
                 if reply.data.payload.decode("utf-8") != "None":
                     r = json.loads(reply.data.payload.decode("utf-8"))
-                    if int(r["from"]) in border_gw:
-                        return r
+                    if int(r[0]["from"]) in border_gw:
+                        return r[0]
                     else:
                         print(f"reaching zone {z} from zone {r['from']}")
-                        z = int(r["from"])
+                        z = int(r[0]["from"])
                         break
 
 def instradate(src,dst,net,datapath):
     dpid = to_dpid(datapath.id)    
     if src not in known_hosts:
-        replies = session.get_collect(f"sdn/*/hosts/{src}",local_routing=False)
+        replies = session.get(f"sdn/*/hosts/{src}",local_routing=False)
         for reply in replies:
             if reply.data.payload.decode("utf-8") != "None":
                 known_hosts[str(reply.data.key_expr)[-17:]] = json.loads(reply.data.payload.decode("utf-8"))
                     
         
     if dst not in known_hosts:
-        replies = session.get_collect(f"sdn/*/hosts/{dst}",local_routing=False)
+        replies = session.get(f"sdn/*/hosts/{dst}",local_routing=False)
         for reply in replies:
             if reply.data.payload.decode("utf-8") != "None":
                 known_hosts[str(reply.data.key_expr)[-17:]] = json.loads(reply.data.payload.decode("utf-8"))
@@ -138,13 +138,13 @@ def instradate(src,dst,net,datapath):
         path=nx.shortest_path(net,src,dst,weight='weight')
         if dpid not in path:
             return
-        #print(f"{src} -> {dst} use path {path}")
+        print(f"{src} -> {dst} use path {path}")
         next=path[path.index(dpid)+1]
         out_port=net[dpid][next]['port']
     elif src not in net and dst in net:
         if src in known_hosts:
             path=nx.shortest_path(net,dpid,dst)
-            #print(f"{src} -> {dst} use path {path}")
+            print(f"{src} -> {dst} use path {path}")
             next=path[path.index(dpid)+1]
             out_port=net[dpid][next]['port']
         else:
@@ -156,8 +156,8 @@ def instradate(src,dst,net,datapath):
                 border_gw[known_hosts[dst]["zone"]] = border_gw[int(r["from"])]
                 session.put(basekey + f"/BS/{known_hosts[dst]['zone']}",json.dumps({"via":border_gw[int(r["from"])],"from":r["from"]}))
                 
-            path=nx.shortest_path(net,src,to_dpid(border_gw[known_hosts[dst]["zone"]]),weight='weight')
-            #print(f"{src} -> {dst} use path {path}")
+            path=nx.shortest_path(net,src,border_gw[known_hosts[dst]["zone"]],weight='weight')
+            print(f"{src} -> {dst} use path {path}")
             try:
                 if(path.index(dpid) == len(path)-1) and (datapath.id in border_switch):
                     return 0
@@ -176,8 +176,8 @@ def instradate(src,dst,net,datapath):
                 r = border_retriever(known_hosts[dst]["zone"])
                 border_gw[known_hosts[dst]["zone"]] = border_gw[int(r["from"])]
                 session.put(basekey + f"/BS/{known_hosts[dst]['zone']}",json.dumps({"via":border_gw[int(r["from"])],"from":r["from"]}))
-            path=nx.shortest_path(net,to_dpid(border_gw[known_hosts[src]["zone"]]),to_dpid(border_gw[known_hosts[dst]["zone"]]),weight='weight')
-            #print(f"{src} -> {dst} use path {path}")
+            path=nx.shortest_path(net,dpid,border_gw[known_hosts[dst]["zone"]],weight='weight')
+            print(f"{src} -> {dst} use path {path}")
             try:
                 if(path.index(dpid) == len(path)-1) and (datapath.id in border_switch):
                     return 0
@@ -220,9 +220,9 @@ i=0
 zone = 1
 fast_links = [(to_dpid(5),to_dpid(1)),(to_dpid(1),to_dpid(5)),("00:00:00:00:00:01",to_dpid(5)),(to_dpid(5),"00:00:00:00:00:01")]
 known_hosts = {"00:00:00:00:00:01":{"zone":1, "ip":"10.0.0.1"},"00:00:00:00:00:02":{"zone":1, "ip":"10.0.0.2"}} #mac:zone
-border_switch=[1]
-session.put(basekey + "/BS/2",json.dumps({"via":"1","from":"1"})) #to zone via dpid from zone s
-border_gw = {2:1} #to zone %d use dpid %d
+border_switch=[3,4]
+session.put(basekey + "/BS/2",json.dumps([{"via":"3","from":"1"},{"via":"4","from":"1"}])) #to zone via dpid from zone s
+border_gw = {2:'gateway2'} #to zone %d use dpid %d
 flows = {}
 flag = 0
 
@@ -325,12 +325,19 @@ class Controllerz1(app_manager.RyuApp):
         if flag == 0:
             self.update_known_hosts()
             net.add_node('00:00:00:00:00:01')
-            net.add_edge(self.to_dpid(5),'00:00:00:00:00:01',port=3)
-            net.add_edge('00:00:00:00:00:01',self.to_dpid(5))
+            net.add_edge(self.to_dpid(1),'00:00:00:00:00:01',port=4)
+            net.add_edge('00:00:00:00:00:01',self.to_dpid(1))
 
             net.add_node('00:00:00:00:00:02')
-            net.add_edge(self.to_dpid(6),'00:00:00:00:00:02',port=3)
-            net.add_edge('00:00:00:00:00:02',self.to_dpid(6))
+            net.add_edge(self.to_dpid(2),'00:00:00:00:00:02',port=4)
+            net.add_edge('00:00:00:00:00:02',self.to_dpid(2))
+
+            net.add_node("gateway2")
+            net.add_edge(self.to_dpid(3),'gateway2',port=4)
+            net.add_edge('gateway2',self.to_dpid(3))
+
+            net.add_edge(self.to_dpid(4),'gateway2',port=4)
+            net.add_edge('gateway2',self.to_dpid(4))
 
             match = parser.OFPMatch(eth_type=0x1111)
             actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER,
