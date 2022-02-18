@@ -91,13 +91,15 @@ def to_dpid(n):
 
 def border_retriever(z):
         global session,zone,border_gw
-
+        s_latency = int(round(time.time() * 1000))
         while True:
             replies = session.get(f"sdn/*/BS/{z}",local_routing=False)
             for reply in replies:
                 if reply.data.payload.decode("utf-8") != "None":
                     r = json.loads(reply.data.payload.decode("utf-8"))
                     if int(r[0]["from"]) in border_gw:
+                        e_latency = int(round(time.time() * 1000))
+                        print(f"C1 Border Retriever latency: {e_latency - s_latency}ms")
                         return r[0]
                     else:
                         print(f"reaching zone {z} from zone {r['from']}")
@@ -109,24 +111,32 @@ def instradate(src,dst,net,datapath):
     src_zone = zone
     dst_zone = zone
     out_port = 0
+    s_src = 0
+    e_src = 0
+    s_dst = 0
+    e_dst = 0
     if src not in known_hosts:
+        s_src = int(round(time.time() * 1000))
+
         replies = session.get(f"sdn/*/hosts/{src}",local_routing=False)
         for reply in replies:
             if reply.data.payload.decode("utf-8") != "None":
                 #known_hosts[str(reply.data.key_expr)[-17:]] = json.loads(reply.data.payload.decode("utf-8"))
                 tmp = json.loads(reply.data.payload.decode("utf-8"))
                 src_zone = tmp["zone"]
-                print(src_zone)
+        e_src = int(round(time.time() * 1000))
                     
         
     if dst not in known_hosts:
+        s_dst = int(round(time.time() * 1000))
         replies = session.get(f"sdn/*/hosts/{dst}",local_routing=False)
         for reply in replies:
             if reply.data.payload.decode("utf-8") != "None":
                 tmp = json.loads(reply.data.payload.decode("utf-8"))
                 dst_zone = tmp["zone"]
-                print(dst_zone)
-                print(border_gw)
+        e_dst = int(round(time.time() * 1000))
+    
+    print(f"Controller1 distributed query time {src}->{dst}: \nsrc = {e_src - s_src}ms \ndst = {e_dst - s_dst}ms")
     if src not in net:
         if src in known_hosts and known_hosts[src]==zone:
 
