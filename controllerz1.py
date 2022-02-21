@@ -28,10 +28,15 @@ import copy
 
 
 def topology_update(dummy):
-    global session,flows,mode,modes
+    global session,flows,mode,modes,flag_flows,fast_net,slow_net
     #session.put(basekey+f"/flows/{zone}/{mode}",json.dumps(flows))
     #mode = modes[1]
-    print("Trigger pkt 1")
+    
+    flag_flows = 1
+    if mode == modes[0]:
+        mode = modes[1]
+    else:
+        mode = modes[0]
 
 def known_hosts_update(hosts):
     global known_hosts
@@ -97,7 +102,7 @@ def border_retriever(z):
                     r = json.loads(reply.data.payload.decode("utf-8"))
                     if int(r[0]["from"]) in border_gw:
                         e_latency = int(round(time.time() * 1000))
-                        print(f"BR delay: {e_latency - s_latency}ms")
+                        #print(f"BR delay: {e_latency - s_latency}ms")
                         return r[0]
                     else:
                         print(f"reaching zone {z} from zone {r['from']}")
@@ -141,17 +146,7 @@ def instradate(src,dst,net,datapath):
     e_src = 0
     s_dst = 0
     e_dst = 0
-    """if src not in known_hosts:
-        s_src = int(round(time.time() * 1000))
-
-        replies = session.get(f"sdn/*/hosts/{src}",local_routing=False)
-        for reply in replies:
-            if reply.data.payload.decode("utf-8") != "None":
-                #known_hosts[str(reply.data.key_expr)[-17:]] = json.loads(reply.data.payload.decode("utf-8"))
-                tmp = json.loads(reply.data.payload.decode("utf-8"))
-                src_zone = tmp["zone"]
-        e_src = int(round(time.time() * 1000))"""
-                    
+  
         
     if dst not in known_hosts:
         s_dst = int(round(time.time() * 1000))
@@ -161,10 +156,7 @@ def instradate(src,dst,net,datapath):
                 tmp = json.loads(reply.data.payload.decode("utf-8"))
                 dst_zone = tmp["zone"]
         e_dst = int(round(time.time() * 1000))
-        print(f"Zone discovery: {e_dst - s_dst}ms")
-    
-    #print(f"Controller1 distributed query time {src}->{dst}: \nsrc = {e_src - s_src}ms \ndst = {e_dst - s_dst}ms")
-    
+ 
     if src not in net:
         if src in known_hosts and known_hosts[src]==zone:
 
@@ -184,14 +176,7 @@ def instradate(src,dst,net,datapath):
         out_port = request_path(net,src,dst,dpid,src,dst)
     elif src not in net and dst in net:
         out_port = request_path(net,src,dst,dpid,dpid,dst)
-    elif src in net and dst not in net:
-        if dst_zone not in border_gw:
-            r = border_retriever(dst_zone)
-            border_gw[dst_zone] = border_gw[int(r["from"])]
-            session.put(basekey + f"/BS/{dst_zone}",json.dumps({"via":border_gw[int(r["from"])],"from":r["from"]}))
-        out_port = request_path(net,src,dst,dpid,src,border_gw[dst_zone])
-    elif src not in net and dst not in net:
-        
+    elif dst not in net:
         if dst_zone not in border_gw:
             r = border_retriever(dst_zone)
             border_gw[dst_zone] = border_gw[int(r["from"])]
@@ -205,7 +190,7 @@ zenoh.init_logger()
 session = zenoh.open(conf)
 zones = ["zone2","zone3"]
 
-sub1 = session.subscribe(basekey+"host-pkt/**",topology_update,reliability=Reliability.Reliable, mode=SubMode.Push)
+sub1 = session.subscribe("sdn/host-pkt/**",topology_update,reliability=Reliability.Reliable, mode=SubMode.Push)
 sub2 = session.subscribe(basekey+"known_hosts",known_hosts_update,reliability=Reliability.Reliable, mode=SubMode.Push)
 
 store = {}
@@ -239,6 +224,8 @@ flows = {}
 flag = 0
 br_delay = 0
 zone_delay = 0
+datapaths = []
+flag_flows = 0
 
 
 
@@ -246,10 +233,12 @@ zone_delay = 0
 
 
 class Controllerz1(app_manager.RyuApp):
-    
+    global session
+
     OFP_VERSIONS = [ofproto_v1_3.OFP_VERSION]    
 
     def __init__(self, *args, **kwargs):
+        
         super(Controllerz1, self).__init__(*args, **kwargs)
         self.topology_api_app = self
 
@@ -262,20 +251,20 @@ class Controllerz1(app_manager.RyuApp):
         match = parser.OFPMatch()
         actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER,
                                           ofproto.OFPCML_NO_BUFFER)]
-        self.add_flow(datapath, 0, match, actions)
+        self.add_flow(datapath, 0, match, actions,0)
 
-    def add_flow(self, datapath, priority, match, actions, buffer_id=None):
+    def add_flow(self, datapath, priority, match, actions,cookie, buffer_id=None):
         ofproto = datapath.ofproto
         parser = datapath.ofproto_parser
 
         inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS,
                                              actions)]
         if buffer_id:
-            mod = parser.OFPFlowMod(datapath=datapath, buffer_id=buffer_id,
+            mod = parser.OFPFlowMod(datapath=datapath, buffer_id=buffer_id,cookie=cookie,
                                     priority=priority, match=match,
                                     instructions=inst)
         else:
-            mod = parser.OFPFlowMod(datapath=datapath, priority=priority,
+            mod = parser.OFPFlowMod(datapath=datapath, priority=priority,cookie=cookie,
                                     match=match, instructions=inst)
         datapath.send_msg(mod)
 
@@ -305,11 +294,30 @@ class Controllerz1(app_manager.RyuApp):
                 net[self.to_dpid(link.src.dpid)][self.to_dpid(link.dst.dpid)]['weight'] = 10
                 net[self.to_dpid(link.dst.dpid)][self.to_dpid(link.src.dpid)]['weight'] = 10
     
+    def remove_flows(self):
+        for d in flows: 
+            for f in flows[d]:
+                parser = f[0].ofproto_parser
+                ofproto = f[0].ofproto
+                match = f[2]
+                actions = f[3]
+                #self.add_flow(0, datapath, 35000, match, actions)
+                mod = parser.OFPFlowMod(datapath=f[0], table_id=0, cookie=1,
+                command=f[0].ofproto.OFPFC_DELETE, priority=f[1], match=match, out_port= ofproto.OFPP_ANY, out_group=ofproto.OFPG_ANY)
+                f[0].send_msg(mod)
+        print("Flows C1 puliti")
+
     def host_pkt_handler(self,msg):
-        global session,basekey
-        w = msg.data.hex()[28:40]
-        w_dest = w[0:2]+':'+w[2:4] + ':'+w[4:6] + ':'+w[6:8] + ':'+w[8:10] + ':'+w[10:12]
-        session.put( "sdn/*/host-pkt", w_dest )
+        global session,basekey,flows,datapaths
+        #w = msg.data.hex()[28:40]
+        #w_dest = w[0:2]+':'+w[2:4] + ':'+w[4:6] + ':'+w[6:8] + ':'+w[8:10] + ':'+w[10:12]
+        pkt = packet.Packet(msg.data)
+        eth = pkt.get_protocols(ethernet.ethernet)[0]
+        dst = eth.dst
+        src = eth.src
+        session.put( "sdn/host-pkt", json.dumps({"src": src, "dst": dst}))
+        
+
             
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
     def _packet_in_handler(self, ev):
@@ -318,7 +326,7 @@ class Controllerz1(app_manager.RyuApp):
         global mac_to_port
         global flows
         global switches
-        global border_gw,border_switch,flag,zone,zones,fast_links,br_delay,zone_delay
+        global border_gw,border_switch,flag,zone,zones,fast_links,br_delay,zone_delay,flag_flows
         
         s = int(round(time.time() * 1000))
         msg = ev.msg
@@ -336,7 +344,8 @@ class Controllerz1(app_manager.RyuApp):
         dpid = format(datapath.id, "d").zfill(16)
         flows.setdefault(dpid,[])
         out_port = 0
-
+        if datapath not in datapaths:
+            datapaths.append(datapath)
         if flag == 0:
             self.update_known_hosts()
             net.add_node('00:00:00:00:00:01')
@@ -357,12 +366,14 @@ class Controllerz1(app_manager.RyuApp):
             match = parser.OFPMatch(eth_type=0x1111)
             actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER,
                                           ofproto.OFPCML_NO_BUFFER)]
-            self.add_flow(datapath, 0, match, actions)
-            flows[dpid].append([datapath,1,match,actions])
+            self.add_flow(datapath, 0, match, actions,0)
+        
             
             
             flag = 1
-        
+        if flag_flows == 1:
+            self.remove_flows()
+            flag_flows = 0
         if ev.msg.msg_len < ev.msg.total_len:
             self.logger.debug("packet truncated: only %s of %s bytes",
                               ev.msg.msg_len, ev.msg.total_len)
@@ -376,17 +387,17 @@ class Controllerz1(app_manager.RyuApp):
         if eth.ethertype == 4369:
             self.host_pkt_handler(msg)
             return
-        print("C1 Delays:")
+        #print("C1 Delays:")
         out_port = instradate(src,dst,net,datapath)
 
         actions = [parser.OFPActionOutput(out_port)]
         if out_port != ofproto.OFPP_FLOOD and (flagl==0 and flags==0) and out_port != 0:
             match = parser.OFPMatch(in_port=in_port, eth_dst=dst, eth_src=src)
             if msg.buffer_id != ofproto.OFP_NO_BUFFER:
-                self.add_flow(datapath, 1, match, actions, msg.buffer_id)
+                self.add_flow(datapath, 1, match, actions,1, msg.buffer_id)
                 return
             else:
-                self.add_flow(datapath, 1, match, actions)
+                self.add_flow(datapath, 1, match, actions,1)
                 flows[dpid].append([datapath,1,match,actions])
         data = None
         if msg.buffer_id == ofproto.OFP_NO_BUFFER:
@@ -394,7 +405,7 @@ class Controllerz1(app_manager.RyuApp):
         out = parser.OFPPacketOut(datapath=datapath, buffer_id=msg.buffer_id,
                                   in_port=in_port, actions=actions, data=data)
         e = int(round(time.time() * 1000))
-        print(f"Total pkt handler: {e-s}ms ")
+        #print(f"Total pkt handler: {e-s}ms ")
         datapath.send_msg(out)
 
     @set_ev_cls(event.EventSwitchEnter)
