@@ -45,23 +45,21 @@ def known_hosts_update(hosts):
     
 
 def listener(sample):
-    print(">> [Subscriber1] Received {} ('{}': '{}')"
-          .format(sample.kind, sample.key_expr, sample.payload.decode("utf-8")))
+    #print(">> [Subscriber1] Received {} ('{}': '{}')".format(sample.kind, sample.key_expr, sample.payload.decode("utf-8")))
     if sample.kind == SampleKind.DELETE:
         store.pop(str(sample.key_expr), None)
     else:
         store[str(sample.key_expr)] = (sample.value, sample.source_info)
 
 def listener_bs(sample):
-    print(">> [Subscriber1] Received {} ('{}': '{}')"
-          .format(sample.kind, sample.key_expr, sample.payload.decode("utf-8")))
+    #print(">> [Subscriber1] Received {} ('{}': '{}')".format(sample.kind, sample.key_expr, sample.payload.decode("utf-8")))
     if sample.kind == SampleKind.DELETE:
         store_bs.pop(str(sample.key_expr), None)
     else:
         store_bs[str(sample.key_expr)] = (sample.value, sample.source_info)
 
 def query_handler(query):
-    print(">> [Queryable1 ] Received Query '{}'".format(query.selector))
+    #print(">> [Queryable1 ] Received Query '{}'".format(query.selector))
     replies = []
     flag = 0
     for stored_name, (data, source_info) in store.items():
@@ -74,7 +72,7 @@ def query_handler(query):
         query.reply(Sample(key_expr=query.selector, payload="None".encode()))
 
 def query_handler_bs(query):
-    print(">> [Queryable1 ] Received Query '{}'".format(query.selector))
+    #print(">> [Queryable1 ] Received Query '{}'".format(query.selector))
     replies = []
     flag = 0
     for stored_name, (data, source_info) in store_bs.items():
@@ -99,12 +97,40 @@ def border_retriever(z):
                     r = json.loads(reply.data.payload.decode("utf-8"))
                     if int(r[0]["from"]) in border_gw:
                         e_latency = int(round(time.time() * 1000))
-                        print(f"C1 Border Retriever latency: {e_latency - s_latency}ms")
+                        print(f"BR delay: {e_latency - s_latency}ms")
                         return r[0]
                     else:
                         print(f"reaching zone {z} from zone {r['from']}")
                         z = int(r[0]["from"])
                         break
+
+def request_path(net,src,dst,dpid,gsrc,gdst):
+    path = []
+    out_port = 0
+    if (src in paths_cache and dst in paths_cache[src] and paths_cache[src][dst]!=[]):
+        path = paths_cache[src][dst]
+        if dpid not in path:
+            return 0
+        elif path.index(dpid) == len(path)-2:
+            paths_cache[src][dst] = []
+    else:
+        path=nx.shortest_path(net,gsrc,gdst,weight='weight')
+        paths_cache.setdefault(src,{})
+        paths_cache[src][dst] = path
+    if dpid not in path:
+        return 0
+    try:
+        if(path.index(dpid) == len(path)-1) and (datapath.id in border_switch):
+            return 0
+        else:
+            next=path[path.index(dpid)+1]
+            out_port=net[dpid][next]['port']
+        
+            
+    except ValueError:
+        return 0
+    
+    return out_port
 
 def instradate(src,dst,net,datapath):
     dpid = to_dpid(datapath.id)
@@ -115,7 +141,7 @@ def instradate(src,dst,net,datapath):
     e_src = 0
     s_dst = 0
     e_dst = 0
-    if src not in known_hosts:
+    """if src not in known_hosts:
         s_src = int(round(time.time() * 1000))
 
         replies = session.get(f"sdn/*/hosts/{src}",local_routing=False)
@@ -124,7 +150,7 @@ def instradate(src,dst,net,datapath):
                 #known_hosts[str(reply.data.key_expr)[-17:]] = json.loads(reply.data.payload.decode("utf-8"))
                 tmp = json.loads(reply.data.payload.decode("utf-8"))
                 src_zone = tmp["zone"]
-        e_src = int(round(time.time() * 1000))
+        e_src = int(round(time.time() * 1000))"""
                     
         
     if dst not in known_hosts:
@@ -135,8 +161,10 @@ def instradate(src,dst,net,datapath):
                 tmp = json.loads(reply.data.payload.decode("utf-8"))
                 dst_zone = tmp["zone"]
         e_dst = int(round(time.time() * 1000))
+        print(f"Zone discovery: {e_dst - s_dst}ms")
     
-    print(f"Controller1 distributed query time {src}->{dst}: \nsrc = {e_src - s_src}ms \ndst = {e_dst - s_dst}ms")
+    #print(f"Controller1 distributed query time {src}->{dst}: \nsrc = {e_src - s_src}ms \ndst = {e_dst - s_dst}ms")
+    
     if src not in net:
         if src in known_hosts and known_hosts[src]==zone:
 
@@ -153,57 +181,22 @@ def instradate(src,dst,net,datapath):
                 net[src][dpid]['weight'] = 10
     
     if dst in net and src in net:
-        
-        path=nx.shortest_path(net,src,dst,weight='weight')
-        if dpid not in path:
-            return
-        print(f"{src} -> {dst} use path {path}")
-        next=path[path.index(dpid)+1]
-        out_port=net[dpid][next]['port']
+        out_port = request_path(net,src,dst,dpid,src,dst)
     elif src not in net and dst in net:
-        path=nx.shortest_path(net,dpid,dst)
-        print(f"{src} -> {dst} use path {path}")
-        next=path[path.index(dpid)+1]
-        out_port=net[dpid][next]['port']
-
+        out_port = request_path(net,src,dst,dpid,dpid,dst)
     elif src in net and dst not in net:
-        
         if dst_zone not in border_gw:
             r = border_retriever(dst_zone)
-            print(r)
             border_gw[dst_zone] = border_gw[int(r["from"])]
             session.put(basekey + f"/BS/{dst_zone}",json.dumps({"via":border_gw[int(r["from"])],"from":r["from"]}))
-            
-        path=nx.shortest_path(net,src,border_gw[dst_zone],weight='weight')
-        print(f"{src} -> {dst} use path {path}")
-        try:
-            if(path.index(dpid) == len(path)-1) and (datapath.id in border_switch):
-                return 0
-            else:
-                next=path[path.index(dpid)+1]
-                out_port=net[dpid][next]['port']
-        except ValueError:
-            return
+        out_port = request_path(net,src,dst,dpid,src,border_gw[dst_zone])
     elif src not in net and dst not in net:
         
         if dst_zone not in border_gw:
             r = border_retriever(dst_zone)
             border_gw[dst_zone] = border_gw[int(r["from"])]
             session.put(basekey + f"/BS/{dst_zone}",json.dumps({"via":border_gw[int(r["from"])],"from":r["from"]}))
-        if src_zone not in border_gw:
-            r = border_retriever(dst_zone)
-            border_gw[dst_zone] = border_gw[int(r["from"])]
-            session.put(basekey + f"/BS/{src_zone}",json.dumps({"via":border_gw[int(r["from"])],"from":r["from"]}))
-        path=nx.shortest_path(net,dpid,border_gw[dst_zone],weight='weight')
-        print(f"{src} -> {dst} use path {path}")
-        try:
-            if(path.index(dpid) == len(path)-1) and (datapath.id in border_switch):
-                return 0
-            else:
-                next=path[path.index(dpid)+1]
-                out_port=net[dpid][next]['port']
-        except ValueError:
-            return
+        out_port = request_path(net,src,dst,dpid,dpid,border_gw[dst_zone])
     return out_port
 
 conf = zenoh.Config()
@@ -223,6 +216,7 @@ store_bs = {}
 sub_bs = session.subscribe(basekey + "/BS/**", listener_bs, reliability=Reliability.Reliable, mode=SubMode.Push)
 queryable_bs = session.queryable(basekey + "/BS/**", STORAGE, query_handler_bs)
 
+paths_cache = {}
 mac_to_port = {}
 modes=["stdnetwork","prioritynetwork"]
 mode = modes[0]
@@ -243,6 +237,8 @@ session.put(basekey + "/BS/2",json.dumps([{"via":"3","from":"1"},{"via":"4","fro
 border_gw = {2:'gateway2'} #to zone %d use dpid %d
 flows = {}
 flag = 0
+br_delay = 0
+zone_delay = 0
 
 
 
@@ -322,8 +318,9 @@ class Controllerz1(app_manager.RyuApp):
         global mac_to_port
         global flows
         global switches
-        global border_gw,border_switch,flag,zone,zones,fast_links
-
+        global border_gw,border_switch,flag,zone,zones,fast_links,br_delay,zone_delay
+        
+        s = int(round(time.time() * 1000))
         msg = ev.msg
         datapath = msg.datapath
         ofproto = datapath.ofproto
@@ -379,7 +376,7 @@ class Controllerz1(app_manager.RyuApp):
         if eth.ethertype == 4369:
             self.host_pkt_handler(msg)
             return
-        
+        print("C1 Delays:")
         out_port = instradate(src,dst,net,datapath)
 
         actions = [parser.OFPActionOutput(out_port)]
@@ -396,6 +393,8 @@ class Controllerz1(app_manager.RyuApp):
             data = msg.data
         out = parser.OFPPacketOut(datapath=datapath, buffer_id=msg.buffer_id,
                                   in_port=in_port, actions=actions, data=data)
+        e = int(round(time.time() * 1000))
+        print(f"Total pkt handler: {e-s}ms ")
         datapath.send_msg(out)
 
     @set_ev_cls(event.EventSwitchEnter)
