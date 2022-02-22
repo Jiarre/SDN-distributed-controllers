@@ -27,10 +27,22 @@ from zenoh.queryable import STORAGE
 import copy
 
 
-def topology_update(sample):
-    global session,flows,mode,flag_flows
+def topology_update(dummy):
+    global session,flows,mode,modes,flag_flows,fast_net,slow_net,boosted,net
     #session.put(basekey+f"/flows/{zone}/{mode}",json.dumps(flows))
+    #mode = modes[1]
+    src_zone = zone
     flag_flows = 1
+    if mode == modes[0]:
+        mode = modes[1]
+        fast_net = copy.deepcopy(net)
+        slow_net = copy.deepcopy(net)
+        b = json.loads(dummy.payload.decode("utf-8"))
+        boosted.append(b["src"])
+        boosted.append(b["dst"])
+    else:
+        mode = modes[0]
+
 
 def known_hosts_update(hosts):
     
@@ -113,30 +125,27 @@ def border_retriever(z):
 def request_path(net,src,dst,dpid,gsrc,gdst):
     path = []
     out_port = 0
-    if (src in paths_cache and dst in paths_cache[src] and paths_cache[src][dst]!=[]):
-        path = paths_cache[src][dst]
-        if dpid not in path:
-            return 0
-        elif path.index(dpid) == len(path)-2:
-            paths_cache[src][dst] = []
-    else:
-        path=nx.shortest_path(net,gsrc,gdst,weight='weight')
-        paths_cache.setdefault(src,{})
-        paths_cache[src][dst] = path
+    
+    path=nx.shortest_path(net,gsrc,gdst,weight='weight')
+    """paths_cache.setdefault(src,{})
+    paths_cache.setdefault(dst,{})
+    paths_cache[src][dst] = path
+    paths_cache[dst][src] = path.reverse()"""
     if dpid not in path:
-        return 0
+        return path,0
     try:
-        if(path.index(dpid) == len(path)-1) and (datapath.id in border_switch):
-            return 0
+        if(path.index(dpid) == len(path)-1) and (dpid in border_switch):
+            return path,0
         else:
+            
             next=path[path.index(dpid)+1]
             out_port=net[dpid][next]['port']
         
             
     except ValueError:
-        return 0
+        return path,0
     
-    return out_port
+    return path,out_port
 
 def instradate(src,dst,net,datapath):
     dpid = to_dpid(datapath.id)
@@ -185,17 +194,17 @@ def instradate(src,dst,net,datapath):
                 net[src][dpid]['weight'] = 10
     
     if dst in net and src in net:
-        out_port = request_path(net,src,dst,dpid,src,dst)
+        path,out_port = request_path(net,src,dst,dpid,src,dst)
     elif src not in net and dst in net:
-        out_port = request_path(net,src,dst,dpid,dpid,dst)
+        path,out_port = request_path(net,src,dst,dpid,dpid,dst)
     elif dst not in net:
         if dst_zone not in border_gw:
             r = border_retriever(dst_zone)
             border_gw[dst_zone] = border_gw[int(r["from"])]
             session.put(basekey + f"/BS/{dst_zone}",json.dumps({"via":border_gw[int(r["from"])],"from":r["from"]}))
-        out_port = request_path(net,src,dst,dpid,dpid,border_gw[dst_zone])
+        path,out_port = request_path(net,src,dst,dpid,dpid,border_gw[dst_zone])
     
-    return out_port
+    return path,out_port
     
 conf = zenoh.Config()
 basekey = "sdn/zone3"
@@ -214,7 +223,8 @@ sub_bs = session.subscribe(basekey + "/BS/**", listener_bs, reliability=Reliabil
 queryable_bs = session.queryable(basekey + "/BS/**", STORAGE, query_handler_bs)
 
 paths_cache = {}
-mode = "stdnetwork"
+modes=["stdnetwork","prioritynetwork"]
+mode = modes[0]
 mac_to_port = {}
 zones = ["zone1","zone2"]
 net=nx.DiGraph()
@@ -224,7 +234,8 @@ switches = {}
 no_of_nodes = 0
 no_of_links = 0
 i=0
-fast_links = [(to_dpid(8),to_dpid(3)),(to_dpid(3),to_dpid(8)),("00:00:00:00:00:04",to_dpid(8)),(to_dpid(8),"00:00:00:00:00:04")]
+#fast_links = []
+fast_links = [(to_dpid(14),to_dpid(12)),(to_dpid(12),to_dpid(14)),(to_dpid(14),to_dpid(13)),(to_dpid(13),to_dpid(14)),(to_dpid(12),to_dpid(11)),(to_dpid(11),to_dpid(12)),("00:00:00:00:00:03",to_dpid(13)),(to_dpid(13),"00:00:00:00:00:03"),("00:00:00:00:00:04",to_dpid(14)),(to_dpid(14),"00:00:00:00:00:04")]
 
 known_hosts = {"00:00:00:00:00:03":{"zone":3, "ip":"10.0.0.3"},"00:00:00:00:00:04":{"zone":3, "ip":"10.0.0.4"}}
 border_switch = [11,12]
@@ -236,6 +247,7 @@ zone=3
 br_delay = 0
 zone_delay = 0
 flag_flows = 0
+boosted = []
 
 
 
@@ -300,6 +312,7 @@ class Controllerz1(app_manager.RyuApp):
                 net[self.to_dpid(link.dst.dpid)][self.to_dpid(link.src.dpid)]['weight'] = 10
     
     def remove_flows(self):
+        global flows
         for d in flows: 
             for f in flows[d]:
                 parser = f[0].ofproto_parser
@@ -311,6 +324,7 @@ class Controllerz1(app_manager.RyuApp):
                 command=f[0].ofproto.OFPFC_DELETE, priority=f[1], match=match, out_port= ofproto.OFPP_ANY, out_group=ofproto.OFPG_ANY)
                 f[0].send_msg(mod)
         print("Flows C3 puliti")
+        flows = {}
 
     def host_pkt_handler(self,msg):
         global session,basekey,flows,datapaths
@@ -330,6 +344,8 @@ class Controllerz1(app_manager.RyuApp):
         global flows
         global switches
         global border_gw,border_switch,flag,zone,fast_links,zone_delay,br_delay,flag_flows
+        global fast_net,slow_net,boosted,mode,modes
+
         s = int(round(time.time() * 1000))
         msg = ev.msg
         datapath = msg.datapath
@@ -361,9 +377,13 @@ class Controllerz1(app_manager.RyuApp):
             net.add_node("gateway2")
             net.add_edge(self.to_dpid(11),'gateway2',port=4)
             net.add_edge('gateway2',self.to_dpid(11))
+            net[self.to_dpid(11)]['gateway2']['weight'] = 1000
+            net['gateway2'][self.to_dpid(11)]['weight'] = 1000
 
             net.add_edge(self.to_dpid(12),'gateway2',port=4)
             net.add_edge('gateway2',self.to_dpid(12))
+            net[self.to_dpid(12)]['gateway2']['weight'] = 1000
+            net['gateway2'][self.to_dpid(12)]['weight'] = 1000
 
             match = parser.OFPMatch(eth_type=0x1111)
             actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER,
@@ -387,8 +407,20 @@ class Controllerz1(app_manager.RyuApp):
         if eth.ethertype == 4369:
             self.host_pkt_handler(msg)
             return
-        #print("C3 Delay")
-        out_port = instradate(src,dst,net,datapath)
+        if mode == modes[0]:
+            path,out_port = instradate(src,dst,net,datapath)
+            print(path)
+        elif src in boosted and dst in boosted:
+            print("Entrambi in boosted")
+            path,out_port = instradate(src,dst,fast_net,datapath)
+            print(f"FAST PATH {src}->{dst} {path}")
+            for l in range(0,len(path)-2):
+                if slow_net.has_edge(str(path[l]),str(path[l+1])):
+                    slow_net.remove_edge(str(path[l]),str(path[l+1]))
+                    slow_net.remove_edge(str(path[l+1]),str(path[l]))
+        else:
+            path,out_port = instradate(src,dst,slow_net,datapath)
+            print(f"SLOW PATH {src}->{dst} {path}")
         actions = [parser.OFPActionOutput(out_port)]
         if out_port != ofproto.OFPP_FLOOD and (flagl==0 and flags==0) and out_port!=0:
             match = parser.OFPMatch(in_port=in_port, eth_dst=dst, eth_src=src)

@@ -35,43 +35,43 @@ class Topology(Topo):
         self.addHost("h3")
         self.addHost("h4")
         # central zone
-        self.addLink("s5","s6",bw=10)
-        self.addLink("s5","s7",bw=1000)
-        self.addLink("s5","s10",bw=10)
-        self.addLink("s6","s8",bw=1000)
+        self.addLink("s5","s6",bw=1000)
+        self.addLink("s5","s7",bw=1)
+        self.addLink("s5","s10",bw=1000)
+        self.addLink("s6","s8",bw=1)
         self.addLink("s6","s9",bw=1000)
-        self.addLink("s8","s10",bw=10)
-        self.addLink("s7","s9",bw=10)
-        self.addLink("s9","s10",bw=10)
+        self.addLink("s8","s10",bw=1)
+        self.addLink("s7","s9",bw=1)
+        self.addLink("s9","s10",bw=1000)
 
         # left zone
-        self.addLink("s1","s2",bw=1000)
-        self.addLink("s1","s3",bw=10)
-        self.addLink("s1","s4",bw=10)
-        self.addLink("s2","s3",bw=10)
-        self.addLink("s2","s4",bw=10)
-        self.addLink("s3","s4",bw=10)
+        self.addLink("s1","s2",bw=1)
+        self.addLink("s1","s3",bw=1)
+        self.addLink("s1","s4",bw=1000)
+        self.addLink("s2","s3",bw=1)
+        self.addLink("s2","s4",bw=1000)
+        self.addLink("s3","s4",bw=1000)
 
         # right zone
         self.addLink("s13","s14",bw=1000)
-        self.addLink("s13","s11",bw=10)
-        self.addLink("s13","s12",bw=10)
-        self.addLink("s14","s11",bw=10)
-        self.addLink("s14","s12",bw=10)
-        self.addLink("s12","s11",bw=10)
+        self.addLink("s13","s11",bw=1)
+        self.addLink("s13","s12",bw=1)
+        self.addLink("s14","s11",bw=1)
+        self.addLink("s14","s12",bw=1000)
+        self.addLink("s12","s11",bw=1000)
 
         # adding border connections
-        self.addLink("s3","s5",bw=10)
-        self.addLink("s4","s6",bw=10)
-        self.addLink("s9","s11",bw=10)
-        self.addLink("s10","s12",bw=10)
+        self.addLink("s3","s5",bw=1000)
+        self.addLink("s4","s6",bw=1000)
+        self.addLink("s9","s11",bw=1000)
+        self.addLink("s10","s12",bw=1000)
 
 
         # adding hosts
 
         self.addLink("h1","s1",bw=1000)
-        self.addLink("h2","s2",bw=10)
-        self.addLink("h3","s13",bw=10)
+        self.addLink("h2","s2",bw=1000)
+        self.addLink("h3","s13",bw=1000)
         self.addLink("h4","s14",bw=1000)
 
 
