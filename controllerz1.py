@@ -11,7 +11,7 @@ from ryu.lib.packet import ethernet
 from ryu.lib.packet import ether_types
 from ryu.topology import event, switches
 from ryu.topology.api import get_switch, get_link
-
+from ryu.app.ofctl import api
 from ryu.app.wsgi import ControllerBase
 
 import networkx as nx
@@ -28,7 +28,8 @@ import copy
 
 
 def topology_update(dummy):
-    global session,flows,mode,modes,flag_flows,fast_net,slow_net,boosted,net
+    global session,flows,mode,modes,flag_flows,fast_net,slow_net,boosted,net,paths_cache
+    paths_cache = {}
     #session.put(basekey+f"/flows/{zone}/{mode}",json.dumps(flows))
     #mode = modes[1]
     src_zone = zone
@@ -101,13 +102,13 @@ def border_retriever(z):
         global session,zone,border_gw
         s_latency = int(round(time.time() * 1000))
         while True:
-            replies = session.get(f"sdn/*/BS/{z}",local_routing=False)
+            replies = session.get(f"/sdn/*/BS/{z}",local_routing=False)
             for reply in replies:
                 if reply.data.payload.decode("utf-8") != "None":
                     r = json.loads(reply.data.payload.decode("utf-8"))
                     if int(r[0]["from"]) in border_gw:
                         e_latency = int(round(time.time() * 1000))
-                        #print(f"BR delay: {e_latency - s_latency}ms")
+                        print(f"BR delay: {e_latency - s_latency}ms")
                         return r[0]
                     else:
                         print(f"reaching zone {z} from zone {r['from']}")
@@ -115,18 +116,17 @@ def border_retriever(z):
                         break
 
 def request_path(net,src,dst,dpid,gsrc,gdst):
+    global paths_cache
     path = []
     out_port = 0
+    paths_cache.setdefault(src,{})
     
     path=nx.shortest_path(net,gsrc,gdst,weight='weight')
-    """paths_cache.setdefault(src,{})
-    paths_cache.setdefault(dst,{})
-    paths_cache[src][dst] = path
-    paths_cache[dst][src] = path.reverse()"""
+    paths_cache[src][dst] = path         
     if dpid not in path:
         return path,0
     try:
-        if(path.index(dpid) == len(path)-1) and (dpid in border_switch):
+        if (path.index(dpid) == len(path)-1) and (dpid in border_switch):
             return path,0
         else:
             
@@ -148,17 +148,32 @@ def instradate(src,dst,net,datapath):
     e_src = 0
     s_dst = 0
     e_dst = 0
+
+    if src in paths_cache and dst in paths_cache[src] and paths_cache[src][dst]!=[]:
+        path = paths_cache[src][dst]
+        if dpid not in path:
+            return path,0
+        if (dpid in path) and (path.index(dpid) == len(path)-1) and (dpid in border_switch):
+            return path,0
+        else:
+            
+            next=path[path.index(dpid)+1]
+            if path.index(next) == len(path)-1:
+                paths_cache[src][dst] = []
+            out_port=net[dpid][next]['port']
+        return path,out_port
     
     
     if dst not in known_hosts:
         s_dst = int(round(time.time() * 1000))
-        replies = session.get(f"sdn/*/hosts/{dst}",local_routing=False)
+        replies = session.get(f"/sdn/*/hosts/{dst}",local_routing=False)
         for reply in replies:
             if reply.data.payload.decode("utf-8") != "None":
                 tmp = json.loads(reply.data.payload.decode("utf-8"))
+            
                 dst_zone = tmp["zone"]
         e_dst = int(round(time.time() * 1000))
-
+        print(f"Host discovery delay = {e_dst - s_dst}ms")
     if src not in net:
         if src in known_hosts and known_hosts[src]==zone:
 
@@ -184,6 +199,7 @@ def instradate(src,dst,net,datapath):
             border_gw[dst_zone] = border_gw[int(r["from"])]
             session.put(basekey + f"/BS/{dst_zone}",json.dumps({"via":border_gw[int(r["from"])],"from":r["from"]}))
         path,out_port = request_path(net,src,dst,dpid,dpid,border_gw[dst_zone])
+    print(f"{src}->{dst} use path {path}")
     return path,out_port
 
 
@@ -191,18 +207,17 @@ def instradate(src,dst,net,datapath):
             
 
 conf = zenoh.Config()
-basekey = "sdn/zone1"
+basekey = "/sdn/zone1"
 zenoh.init_logger()
 session = zenoh.open(conf)
 zones = ["zone2","zone3"]
 
-sub1 = session.subscribe("sdn/host-pkt/**",topology_update,reliability=Reliability.Reliable, mode=SubMode.Push)
+sub1 = session.subscribe("/sdn/host-pkt/**",topology_update,reliability=Reliability.Reliable, mode=SubMode.Push)
 sub2 = session.subscribe(basekey+"known_hosts",known_hosts_update,reliability=Reliability.Reliable, mode=SubMode.Push)
 
 store = {}
 sub = session.subscribe(basekey + "/hosts/**", listener, reliability=Reliability.Reliable, mode=SubMode.Push)
 queryable = session.queryable(basekey + "/hosts/**", STORAGE, query_handler)
-
 store_bs = {}
 sub_bs = session.subscribe(basekey + "/BS/**", listener_bs, reliability=Reliability.Reliable, mode=SubMode.Push)
 queryable_bs = session.queryable(basekey + "/BS/**", STORAGE, query_handler_bs)
@@ -231,7 +246,7 @@ flows = {}
 flag = 0
 br_delay = 0
 zone_delay = 0
-datapaths = []
+datapaths = [1,2,3,4]
 flag_flows = 0
 
 
@@ -324,7 +339,8 @@ class Controllerz1(app_manager.RyuApp):
         eth = pkt.get_protocols(ethernet.ethernet)[0]
         dst = eth.dst
         src = eth.src
-        session.put( "sdn/host-pkt", json.dumps({"src": src, "dst": w_dest}))
+        tmp = json.dumps({"src": src, "dst": w_dest})
+        session.put( "/sdn/host-pkt", tmp)
         
 
             
@@ -336,8 +352,8 @@ class Controllerz1(app_manager.RyuApp):
         global flows
         global switches
         global border_gw,border_switch,flag,zone,zones,fast_links,br_delay,zone_delay,flag_flows
-        global fast_net,slow_net,boosted
-        
+        global fast_net,slow_net,boosted,datapaths
+        self.topo_discovery()
         s = int(round(time.time() * 1000))
         msg = ev.msg
         datapath = msg.datapath
@@ -352,6 +368,7 @@ class Controllerz1(app_manager.RyuApp):
         flagl = 0
         flags = 0
         dpid = format(datapath.id, "d").zfill(16)
+        i
         flows.setdefault(dpid,[])
         out_port = 0
         if datapath not in datapaths:
@@ -394,7 +411,7 @@ class Controllerz1(app_manager.RyuApp):
 
 
         self.topo_discovery()
-        
+        path = []
         if eth.ethertype == ether_types.ETH_TYPE_LLDP:
             return
         if eth.ethertype == 4369:
@@ -402,18 +419,39 @@ class Controllerz1(app_manager.RyuApp):
             return
         if mode == modes[0]:
             path,out_port = instradate(src,dst,net,datapath)
-            print(path)
+            if dpid not in path:
+                return
+            
+
         elif src in boosted and dst in boosted:
-            print("Entrambi in boosted")
             path,out_port = instradate(src,dst,fast_net,datapath)
-            print(f"FAST PATH {src}->{dst} {path}")
+            #print(f"FAST PATH {src}->{dst} {path}")
             for l in range(0,len(path)-2):
                 if slow_net.has_edge(str(path[l]),str(path[l+1])):
                     slow_net.remove_edge(str(path[l]),str(path[l+1]))
                     slow_net.remove_edge(str(path[l+1]),str(path[l]))
         else:
             path,out_port = instradate(src,dst,slow_net,datapath)
-            print(f"SLOW PATH {src}->{dst} {path}")
+            #print(f"SLOW PATH {src}->{dst} {path}")
+
+        if src in paths_cache and dst in paths_cache[src] and paths_cache[src][dst]!=[]:
+            p = paths_cache[src][dst]  
+            datapaths =  api.get_datapath(self,None)
+            for d in datapaths:
+
+                tmpdpid = to_dpid(d.id)
+                if tmpdpid in p:
+                    
+                    next = p[p.index(tmpdpid)+1]
+                    o_port = net[tmpdpid][next]['port']
+                    
+                    print(o_port)
+                    if o_port != 0:
+                        actions = [parser.OFPActionOutput(o_port)]
+                        match = parser.OFPMatch(eth_dst=dst, eth_src=src)
+                        self.add_flow(d, 1000, match, actions,1)
+                        print(f"addedd flow in {tmpdpid}")
+                        flows[tmpdpid].append([d,1,match,actions])
             
 
         actions = [parser.OFPActionOutput(out_port)]
@@ -421,7 +459,7 @@ class Controllerz1(app_manager.RyuApp):
             match = parser.OFPMatch(in_port=in_port, eth_dst=dst, eth_src=src)
             if msg.buffer_id != ofproto.OFP_NO_BUFFER:
                 self.add_flow(datapath, 1, match, actions,1, msg.buffer_id)
-                return
+                
             else:
                 self.add_flow(datapath, 1, match, actions,1)
                 flows[dpid].append([datapath,1,match,actions])
@@ -431,7 +469,7 @@ class Controllerz1(app_manager.RyuApp):
         out = parser.OFPPacketOut(datapath=datapath, buffer_id=msg.buffer_id,
                                   in_port=in_port, actions=actions, data=data)
         e = int(round(time.time() * 1000))
-        #print(f"Total pkt handler: {e-s}ms ")
+        print(f"C1 {dpid} Total pkt handler: {e-s}ms ")
         datapath.send_msg(out)
 
     @set_ev_cls(event.EventSwitchEnter)
