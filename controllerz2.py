@@ -87,8 +87,7 @@ def query_handler(query):
             sample = Sample(stored_name, data)
             sample.with_source_info(source_info)
             query.reply(sample)
-    if flag == 0:
-        query.reply(Sample(key_expr=query.selector, payload="None".encode()))
+    
 
 def query_handler_bs(query):
     #print(">> [Queryable3 ] Received Query '{}'".format(query.selector))
@@ -100,8 +99,7 @@ def query_handler_bs(query):
             sample = Sample(stored_name, data)
             sample.with_source_info(source_info)
             query.reply(sample)
-    if flag == 0:
-        query.reply(Sample(key_expr=basekey + "/BS/*", payload="None".encode()))
+    
 def to_dpid(n):
     return format(n, "d").zfill(16)
 
@@ -126,10 +124,12 @@ def request_path(net,src,dst,dpid,gsrc,gdst):
     global paths_cache
     path = []
     out_port = 0
-    paths_cache.setdefault(src,{})
     
+
     path=nx.shortest_path(net,gsrc,gdst,weight='weight')
-    paths_cache[src][dst] = path         
+    
+    
+   
     if dpid not in path:
         return path,0
     try:
@@ -147,6 +147,7 @@ def request_path(net,src,dst,dpid,gsrc,gdst):
     return path,out_port
 
 def instradate(src,dst,net,datapath):
+    global kind,target
     dpid = to_dpid(datapath.id)
     src_zone = zone
     dst_zone = zone
@@ -155,7 +156,8 @@ def instradate(src,dst,net,datapath):
     e_src = 0
     s_dst = 0
     e_dst = 0
-
+    paths_cache.setdefault(src,{})
+    paths_cache.setdefault(dst,{})
     if src in paths_cache and dst in paths_cache[src] and paths_cache[src][dst]!=[]:
         path = paths_cache[src][dst]
         if dpid not in path:
@@ -165,22 +167,30 @@ def instradate(src,dst,net,datapath):
         else:
             
             next=path[path.index(dpid)+1]
-            if path.index(next) == len(path)-1:
-                paths_cache[src][dst] = []
+            
             out_port=net[dpid][next]['port']
         return path,out_port
-                    
+    s_dst = int(round(time.time() * 1000))
+    if src not in known_hosts:
         
+        replies = session.get(f"/sdn/*/hosts/{src}",local_routing=False)
+        for reply in replies:
+            if reply.data.payload.decode("utf-8") != "None":
+                tmp = json.loads(reply.data.payload.decode("utf-8"))
+            
+                src_zone = tmp["zone"]
+        e_dst = int(round(time.time() * 1000))
+        print(f"Host discovery delay = {e_dst - s_dst}ms")
     if dst not in known_hosts:
         s_dst = int(round(time.time() * 1000))
         replies = session.get(f"/sdn/*/hosts/{dst}",local_routing=False)
         for reply in replies:
             if reply.data.payload.decode("utf-8") != "None":
                 tmp = json.loads(reply.data.payload.decode("utf-8"))
+            
                 dst_zone = tmp["zone"]
-        e_dst = int(round(time.time() * 1000))
-        print(f"Zone discovery:{e_dst - s_dst}ms")
-    #print(f"Controller2 distributed query time {src}->{dst}: \nsrc = {e_src - s_src}ms \ndst = {e_dst - s_dst}ms")
+    e_dst = int(round(time.time() * 1000))
+    print(f"Host discovery delay = {e_dst - s_dst}ms")
     if src not in net:
         if src in known_hosts and known_hosts[src]==zone:
 
@@ -200,13 +210,32 @@ def instradate(src,dst,net,datapath):
         path,out_port = request_path(net,src,dst,dpid,src,dst)
     elif src not in net and dst in net:
         path,out_port = request_path(net,src,dst,dpid,dpid,dst)
-    elif dst not in net:
+        if src_zone not in border_gw:
+            r = border_retriever(src_zone)
+            border_gw[src_zone] = border_gw[int(r["from"])]
+            session.put(basekey + f"/BS/{src_zone}",json.dumps({"via":border_gw[int(r["from"])],"from":r["from"]}))
+    elif src in net and dst not in net:
+        if dst_zone not in border_gw:
+            r = border_retriever(dst_zone)
+            border_gw[dst_zone] = border_gw[int(r["from"])]
+            session.put(basekey + f"/BS/{dst_zone}",json.dumps({"via":border_gw[int(r["from"])],"from":r["from"]}))
+        path,out_port = request_path(net,src,dst,dpid,src,border_gw[dst_zone])
+    elif src not in net and dst not in net:
+        if src_zone not in border_gw:
+            r = border_retriever(src_zone)
+            border_gw[src_zone] = border_gw[int(r["from"])]
+            session.put(basekey + f"/BS/{src_zone}",json.dumps({"via":border_gw[int(r["from"])],"from":r["from"]}))
         if dst_zone not in border_gw:
             r = border_retriever(dst_zone)
             border_gw[dst_zone] = border_gw[int(r["from"])]
             session.put(basekey + f"/BS/{dst_zone}",json.dumps({"via":border_gw[int(r["from"])],"from":r["from"]}))
         path,out_port = request_path(net,src,dst,dpid,dpid,border_gw[dst_zone])
-    print(f"{src}->{dst} use path {path}")
+    paths_cache[src][dst] = path
+    if src not in net:
+        path.insert(0,border_gw[src_zone])
+    paths_cache[dst][src] = path[::-1] 
+    print(f"path {path} \n reverse {path[::-1]}")
+        
     return path,out_port
 
 conf = zenoh.Config()
@@ -415,15 +444,37 @@ class Controllerz1(app_manager.RyuApp):
         if eth.ethertype == 4369:
             self.host_pkt_handler(msg)
             return
+        out_port = 0
         if mode == modes[0]:
             path,out_port = instradate(src,dst,net,datapath)
-            if dpid not in path:
-                return
-            
+            datapaths = api.get_datapath(self, dpid=None)
+            for d in datapaths:
+                if to_dpid(d.id) in path:
+                    next1 = paths_cache[src][dst][paths_cache[src][dst].index(to_dpid(d.id))+1]
+                    o_port1 = net[to_dpid(d.id)][next1]['port']
+                    next2 = paths_cache[dst][src][paths_cache[dst][src].index(to_dpid(d.id))+1]
+                    o_port2 = net[to_dpid(d.id)][next2]['port']
+                    actions1 = [parser.OFPActionOutput(o_port1)]
+                    actions2 = [parser.OFPActionOutput(o_port2)]
+                    match1 = parser.OFPMatch(in_port=o_port2,eth_dst=dst, eth_src=src)
+                    #print(f"Se src: {src} e dst: {dst} in dpid: {to_dpid(d.id)} allora out: {o_port1}")
+                    #print(f"Se src: {dst} e dst: {src} in dpid: {to_dpid(d.id)} allora out: {o_port2}")
+                    match2 = parser.OFPMatch(in_port=o_port1,eth_dst=src, eth_src=dst)
+                    if msg.buffer_id != ofproto.OFP_NO_BUFFER:
+                        self.add_flow(d, 1, match2, actions2,1, msg.buffer_id)
+                        self.add_flow(d, 1, match1, actions1,1, msg.buffer_id)
+                    else:
+                        self.add_flow(d, 1, match2, actions2,1)
+                        self.add_flow(d, 1, match1, actions1,1)
+                        flows[to_dpid(d.id)].append([d,1,match1,actions1])
+                        flows[to_dpid(d.id)].append([d,1,match2,actions2])
+                    
+                    
+                
+
         elif src in boosted and dst in boosted:
-            #print("Entrambi in boosted")
             path,out_port = instradate(src,dst,fast_net,datapath)
-            #print(f"FAST PATH {src}->{dst} {path}")   
+            #print(f"FAST PATH {src}->{dst} {path}")
             for l in range(0,len(path)-2):
                 if slow_net.has_edge(str(path[l]),str(path[l+1])):
                     slow_net.remove_edge(str(path[l]),str(path[l+1]))
@@ -431,24 +482,9 @@ class Controllerz1(app_manager.RyuApp):
         else:
             path,out_port = instradate(src,dst,slow_net,datapath)
             #print(f"SLOW PATH {src}->{dst} {path}")
+        
 
-        if path!=[] and out_port !=0:
-                    
-                datapaths =  api.get_datapath(self,None)
-                for d in datapaths:
-                    tmpdpid = to_dpid(d.id)
-                    if tmpdpid in path:
-                        
-                        next = path[path.index(tmpdpid)+1]
-                        o_port = net[tmpdpid][next]['port']
-                        
-                        if o_port != 0:
-                            actions = [parser.OFPActionOutput(o_port)]
-                            match = parser.OFPMatch(eth_dst=dst, eth_src=src)
-                            self.add_flow(d, 100, match, actions,1)
-                            flows[tmpdpid].append([d,1,match,actions])
-                    
-
+       
         
         actions = [parser.OFPActionOutput(out_port)]
         if out_port != ofproto.OFPP_FLOOD and (flagl==0 and flags==0) and out_port != 0:

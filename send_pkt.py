@@ -1,12 +1,22 @@
 import socket
 import netifaces
 
+
 s = socket.socket(socket.AF_PACKET, socket.SOCK_RAW)
-s.bind(("h1-eth0",0x1111,socket.PACKET_BROADCAST))
+if (len(socket.if_nameindex()) > 2):
+		for i in socket.if_nameindex():
+			print(str(i[0]) + " -> " + i[1])
+		idx = int(input("Choose the index of the interface where send the packet: "))
+else:
+		# Speed up in best case scenarios, excluding loopback interface
+		idx = 2
+interface = socket.if_indextoname(idx)
+dst = input("Provide the complete MAC address: ")
+s.bind((interface,0x1111,socket.PACKET_BROADCAST))
 eth_type = bytes.fromhex("1111")
 mac_dst = bytes.fromhex("F" * 12)
-mac_src = bytes.fromhex("000000000001")
-data = bytes.fromhex("000000000003")
+mac_src = s.getsockname()[4]
+data = bytes.fromhex(dst.replace(':', ''))
 
 
 # We're putting together an ethernet frame here, 
