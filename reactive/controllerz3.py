@@ -26,6 +26,7 @@ import zenoh
 from zenoh import Reliability, SampleKind, SubMode, Sample, KeyExpr
 from zenoh.queryable import STORAGE
 import copy
+import csv
 
 
 def topology_update(dummy):
@@ -106,16 +107,17 @@ def to_dpid(n):
     return format(n, "d").zfill(16)
 
 def border_retriever(z):
-        global session,zone,border_gw
-        s_latency = int(round(time.time() * 1000))
+        global session,zone,border_gw, br_delay
+        s_latency = int(round(time.time() * 1000000))
         while True:
             replies = session.get(f"/sdn/*/BS/{z}",local_routing=False)
             for reply in replies:
                 if reply.data.payload.decode("utf-8") != "None":
                     r = json.loads(reply.data.payload.decode("utf-8"))
                     if int(r[0]["from"]) in border_gw:
-                        e_latency = int(round(time.time() * 1000))
-                        print(f"BR delay:{e_latency - s_latency}ms")
+                        e_latency = int(round(time.time() * 1000000))
+                        #print(f"BR delay:{e_latency - s_latency}ms")
+                        br_delay += e_latency - s_latency
                         return r[0]
                     else:
                         print(f"reaching zone {z} from zone {r['from']}")
@@ -149,7 +151,7 @@ def request_path(net,src,dst,dpid,gsrc,gdst):
     return path,out_port
 
 def instradate(src,dst,net,datapath):
-    global kind,target
+    global kind,target,host_delay,comm_type
     dpid = to_dpid(datapath.id)
     src_zone = zone
     dst_zone = zone
@@ -158,20 +160,8 @@ def instradate(src,dst,net,datapath):
     e_src = 0
     s_dst = 0
     e_dst = 0
-    paths_cache.setdefault(src,{})
-    paths_cache.setdefault(dst,{})
-    if src in paths_cache and dst in paths_cache[src] and paths_cache[src][dst]!=[]:
-        path = paths_cache[src][dst]
-        if dpid not in path:
-            return path,0
-        if (dpid in path) and (path.index(dpid) == len(path)-1) and (dpid in border_switch):
-            return path,0
-        else:
-            
-            next=path[path.index(dpid)+1]
-            out_port=net[dpid][next]['port']
-        return path,out_port
-    s_dst = int(round(time.time() * 1000))
+    
+    s_dst = int(round(time.time() * 1000000))
     if src not in known_hosts:
         
         replies = session.get(f"/sdn/*/hosts/{src}",local_routing=False)
@@ -180,18 +170,15 @@ def instradate(src,dst,net,datapath):
                 tmp = json.loads(reply.data.payload.decode("utf-8"))
             
                 src_zone = tmp["zone"]
-        e_dst = int(round(time.time() * 1000))
-        print(f"Host discovery delay = {e_dst - s_dst}ms")
     if dst not in known_hosts:
-        s_dst = int(round(time.time() * 1000))
         replies = session.get(f"/sdn/*/hosts/{dst}",local_routing=False)
         for reply in replies:
             if reply.data.payload.decode("utf-8") != "None":
                 tmp = json.loads(reply.data.payload.decode("utf-8"))
             
                 dst_zone = tmp["zone"]
-    e_dst = int(round(time.time() * 1000))
-    print(f"Host discovery delay = {e_dst - s_dst}ms")
+    e_dst = int(round(time.time() * 1000000))
+    host_delay = e_dst - s_dst
     if src not in net:
         if src in known_hosts and known_hosts[src]==zone:
 
@@ -208,34 +195,29 @@ def instradate(src,dst,net,datapath):
                 net[src][dpid]['weight'] = 10
     
     if dst in net and src in net:
+        comm_type = 1
         path,out_port = request_path(net,src,dst,dpid,src,dst)
     elif src not in net and dst in net:
+        comm_type = 2
         path,out_port = request_path(net,src,dst,dpid,dpid,dst)
-        if src_zone not in border_gw:
-            r = border_retriever(src_zone)
-            border_gw[src_zone] = border_gw[int(r["from"])]
-            session.put(basekey + f"/BS/{src_zone}",json.dumps({"via":border_gw[int(r["from"])],"from":r["from"]}))
     elif src in net and dst not in net:
+        comm_type = 3
         if dst_zone not in border_gw:
             r = border_retriever(dst_zone)
             border_gw[dst_zone] = border_gw[int(r["from"])]
             session.put(basekey + f"/BS/{dst_zone}",json.dumps({"via":border_gw[int(r["from"])],"from":r["from"]}))
         path,out_port = request_path(net,src,dst,dpid,src,border_gw[dst_zone])
+        del border_gw[dst_zone]
     elif src not in net and dst not in net:
-        if src_zone not in border_gw:
-            r = border_retriever(src_zone)
-            border_gw[src_zone] = border_gw[int(r["from"])]
-            session.put(basekey + f"/BS/{src_zone}",json.dumps({"via":border_gw[int(r["from"])],"from":r["from"]}))
+        comm_type = 4
         if dst_zone not in border_gw:
             r = border_retriever(dst_zone)
             border_gw[dst_zone] = border_gw[int(r["from"])]
             session.put(basekey + f"/BS/{dst_zone}",json.dumps({"via":border_gw[int(r["from"])],"from":r["from"]}))
+            
         path,out_port = request_path(net,src,dst,dpid,dpid,border_gw[dst_zone])
-    paths_cache[src][dst] = path
-    if src not in net:
-        path.insert(0,border_gw[src_zone])
-    paths_cache[dst][src] = path[::-1] 
-    print(f"path {path} \n reverse {path[::-1]}")
+        del border_gw[dst_zone]
+    
     return path,out_port
     
 conf = zenoh.Config()
@@ -277,7 +259,8 @@ flows = {}
 flag=0
 zone=3
 br_delay = 0
-zone_delay = 0
+host_delay = 0
+comm_type = 0
 flag_flows = 0
 boosted = []
 datapaths = []
@@ -377,8 +360,12 @@ class Controllerz1(app_manager.RyuApp):
         global switches
         global border_gw,border_switch,flag,zone,fast_links,zone_delay,br_delay,flag_flows
         global fast_net,slow_net,boosted,mode,modes,datapaths
+        global comm_type, host_delay, br_delay
         self.topo_discovery()
-        s = int(round(time.time() * 1000))
+        host_delay = 0
+        br_delay = 0
+        comm_type = 0
+        s = int(round(time.time() * 1000000))
         msg = ev.msg
         datapath = msg.datapath
         ofproto = datapath.ofproto
@@ -463,19 +450,25 @@ class Controllerz1(app_manager.RyuApp):
         if out_port != ofproto.OFPP_FLOOD and (flagl==0 and flags==0) and out_port!=0:
             match = parser.OFPMatch(in_port=in_port, eth_dst=dst, eth_src=src)
             if msg.buffer_id != ofproto.OFP_NO_BUFFER:
-                self.add_flow(datapath, 1, match, actions, 1,msg.buffer_id)
+                #self.add_flow(datapath, 1, match, actions, 1,msg.buffer_id)
                 return
             else:
-                self.add_flow(datapath, 1, match,actions,1)
+                #self.add_flow(datapath, 1, match,actions,1)
                 flows[dpid].append([datapath,1,match,actions])
         data = None
         if msg.buffer_id == ofproto.OFP_NO_BUFFER:
             data = msg.data
         out = parser.OFPPacketOut(datapath=datapath, buffer_id=msg.buffer_id,
                                   in_port=in_port, actions=actions, data=data)
-        e = int(round(time.time() * 1000))
-        print(f"C3 Total {dpid} pkt handler: {e-s}ms ")
+        e = int(round(time.time() * 1000000))
+        f = open('measurements/data.csv', 'a')
+        tmp = e-s-br_delay-host_delay
+        row = [2,comm_type, host_delay, br_delay, abs(tmp)]
+        writer = csv.writer(f)
+        writer.writerow(row)
+        f.close()   
         datapath.send_msg(out)
+        
 
     @set_ev_cls(event.EventSwitchEnter)
     def get_topology_data(self, ev):

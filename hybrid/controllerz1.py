@@ -25,6 +25,7 @@ import zenoh
 from zenoh import Reliability, SubMode, config, queryable, QueryTarget, Target, Sample, KeyExpr, SampleKind, Sample, KeyExpr
 from zenoh.queryable import STORAGE, EVAL
 import copy
+import csv
 
 
 def topology_update(dummy):
@@ -94,7 +95,7 @@ def to_dpid(n):
     return format(n, "d").zfill(16)
 
 def border_retriever(z):
-        global session,zone,border_gw,kind,target
+        global session,zone,border_gw,kind,target,br_delay
         s_latency = int(round(time.time() * 1000))
         while True:
             replies = session.get(f"/sdn/*/BS/{z}",local_routing=False)
@@ -103,7 +104,7 @@ def border_retriever(z):
                     r = json.loads(reply.data.payload.decode("utf-8"))
                     if int(r[0]["from"]) in border_gw:
                         e_latency = int(round(time.time() * 1000))
-                        print(f"BR delay: {e_latency - s_latency}ms")
+                        br_delay += e_latency - s_latency
                         return r[0]
                     else:
                         print(f"reaching zone {z} from zone {r['from']}")
@@ -137,7 +138,7 @@ def request_path(net,src,dst,dpid,gsrc,gdst):
     return path,out_port
 
 def instradate(src,dst,net,datapath):
-    global kind,target
+    global kind,target,host_delay,comm_type
     dpid = to_dpid(datapath.id)
     src_zone = zone
     dst_zone = zone
@@ -168,8 +169,6 @@ def instradate(src,dst,net,datapath):
                 tmp = json.loads(reply.data.payload.decode("utf-8"))
             
                 src_zone = tmp["zone"]
-        e_dst = int(round(time.time() * 1000))
-        print(f"Host discovery delay = {e_dst - s_dst}ms")
     if dst not in known_hosts:
         s_dst = int(round(time.time() * 1000))
         replies = session.get(f"/sdn/*/hosts/{dst}",local_routing=False)
@@ -179,7 +178,7 @@ def instradate(src,dst,net,datapath):
             
                 dst_zone = tmp["zone"]
     e_dst = int(round(time.time() * 1000))
-    print(f"Host discovery delay = {e_dst - s_dst}ms")
+    host_delay = e_dst - s_dst
     if src not in net:
         if src in known_hosts and known_hosts[src]==zone:
 
@@ -196,20 +195,24 @@ def instradate(src,dst,net,datapath):
                 net[src][dpid]['weight'] = 10
     
     if dst in net and src in net:
+        comm_type = 2
         path,out_port = request_path(net,src,dst,dpid,src,dst)
     elif src not in net and dst in net:
+        comm_type = 3
         path,out_port = request_path(net,src,dst,dpid,dpid,dst)
         if src_zone not in border_gw:
             r = border_retriever(src_zone)
             border_gw[src_zone] = border_gw[int(r["from"])]
             session.put(basekey + f"/BS/{src_zone}",json.dumps({"via":border_gw[int(r["from"])],"from":r["from"]}))
     elif src in net and dst not in net:
+        comm_type = 4
         if dst_zone not in border_gw:
             r = border_retriever(dst_zone)
             border_gw[dst_zone] = border_gw[int(r["from"])]
             session.put(basekey + f"/BS/{dst_zone}",json.dumps({"via":border_gw[int(r["from"])],"from":r["from"]}))
         path,out_port = request_path(net,src,dst,dpid,src,border_gw[dst_zone])
     elif src not in net and dst not in net:
+        comm_type = 5
         if src_zone not in border_gw:
             r = border_retriever(src_zone)
             border_gw[src_zone] = border_gw[int(r["from"])]
@@ -267,8 +270,9 @@ session.put(basekey + "/BS/2",json.dumps([{"via":"3","from":"1"},{"via":"4","fro
 border_gw = {2:'gateway2'} #to zone %d use gw %d
 flows = {}
 flag = 0
+comm_type = 1
+host_delay = 0
 br_delay = 0
-zone_delay = 0
 flag_flows = 0
 target = Target.BestMatching()
 
@@ -376,6 +380,10 @@ class Controllerz1(app_manager.RyuApp):
         global switches
         global border_gw,border_switch,flag,zone,zones,fast_links,br_delay,zone_delay,flag_flows
         global fast_net,slow_net,boosted,paths_cache
+        global comm_type, host_delay, br_delay
+        comm_type = 1
+        host_delay = 0
+        br_delay = 0
         self.topo_discovery()
         s = int(round(time.time() * 1000))
         msg = ev.msg
@@ -498,8 +506,14 @@ class Controllerz1(app_manager.RyuApp):
             data = msg.data
         out = parser.OFPPacketOut(datapath=datapath, buffer_id=msg.buffer_id,
                                   in_port=in_port, actions=actions, data=data)
+        
         e = int(round(time.time() * 1000))
-        print(f"C1 {dpid} Total pkt handler: {e-s}ms ")
+        f = open('data.csv', 'a')
+        tmp = e-s-br_delay-host_delay
+        row = [2,int(comm_type), host_delay, br_delay, abs(tmp)]
+        writer = csv.writer(f)
+        writer.writerow(row)
+        f.close()     
         datapath.send_msg(out)
 
     @set_ev_cls(event.EventSwitchEnter)
