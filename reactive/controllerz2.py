@@ -219,6 +219,8 @@ def instradate(src,dst,net,datapath):
         r = border_retriever(dst_zone)
         #border_gw[dst_zone] = border_gw[int(r["from"])]
         #session.put(basekey + f"/BS/{dst_zone}",json.dumps({"via":border_gw[int(r["from"])],"from":r["from"]}))
+        if dst_zone == zone:
+            return [],0
         path,out_port = request_path(net,src,dst,dpid,dpid,border_gw[dst_zone])
 
     return path,out_port
@@ -439,6 +441,8 @@ class Controllerz1(app_manager.RyuApp):
         out_port = 0
         if mode == modes[0]:
             path,out_port = instradate(src,dst,net,datapath)
+            if path == []:
+                return
 
         elif src in boosted and dst in boosted:
             path,out_port = instradate(src,dst,fast_net,datapath)

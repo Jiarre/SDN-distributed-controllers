@@ -102,15 +102,18 @@ def border_retriever(z):
                 if reply.data.payload.decode("utf-8") != "None":
                     r = json.loads(reply.data.payload.decode("utf-8"))
                     print(r)
-                    if int(r[0]["from"]) in border_gw:
-                        e_latency = int(round(time.time() * 1000000))
-                        print(f"BR delay: {e_latency - s_latency}ms")
-                        br_delay += e_latency - s_latency
-                        return r[0]
-                    else:
-                        print(f"reaching zone {z} from zone {r['from']}")
-                        z = int(r[0]["from"])
-                        break
+                    try:
+                        if int(r[0]["from"]) in border_gw:
+                            e_latency = int(round(time.time() * 1000000))
+                            print(f"BR delay: {e_latency - s_latency}ms")
+                            br_delay += e_latency - s_latency
+                            return r[0]
+                        else:
+                            print(f"reaching zone {z} from zone {r['from']}")
+                            z = int(r[0]["from"])
+                            break
+                    except KeyError:
+                        return -1
 
 def request_path(net,src,dst,dpid,gsrc,gdst):
     global paths_cache
@@ -194,16 +197,22 @@ def instradate(src,dst,net,datapath):
         comm_type = 3
         if dst_zone not in border_gw:
             r = border_retriever(dst_zone)
-            border_gw[dst_zone] = border_gw[int(r["from"])]
-            session.put(basekey + f"/BS/{dst_zone}",json.dumps({"via":border_gw[int(r["from"])],"from":r["from"]}))
+            if r != -1:
+                border_gw[dst_zone] = border_gw[int(r["from"])]
+                session.put(basekey + f"/BS/{dst_zone}",json.dumps({"via":border_gw[int(r["from"])],"from":r["from"]}))
+            else:
+                return [],0
         path,out_port = request_path(net,src,dst,dpid,src,border_gw[dst_zone])
         del border_gw[dst_zone]
     elif src not in net and dst not in net:
         comm_type = 4
         if dst_zone not in border_gw:
             r = border_retriever(dst_zone)
-            border_gw[dst_zone] = border_gw[int(r["from"])]
-            session.put(basekey + f"/BS/{dst_zone}",json.dumps({"via":border_gw[int(r["from"])],"from":r["from"]}))
+            if r != -1:
+                border_gw[dst_zone] = border_gw[int(r["from"])]
+                session.put(basekey + f"/BS/{dst_zone}",json.dumps({"via":border_gw[int(r["from"])],"from":r["from"]}))
+            else:
+                return [],0
         path,out_port = request_path(net,src,dst,dpid,dpid,border_gw[dst_zone])
         del border_gw[dst_zone]
     
@@ -434,6 +443,8 @@ class Controllerz1(app_manager.RyuApp):
             
         if mode == modes[0]:
             path,out_port = instradate(src,dst,net,datapath)
+            if path == []:
+                return
 
 
         elif src in boosted and dst in boosted:
