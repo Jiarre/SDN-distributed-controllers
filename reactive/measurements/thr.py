@@ -25,11 +25,12 @@ for df in frames:
     
     
 k = pd.concat(meanframes)
+print(k)
 k = k.loc[:, ~k.columns.isin(['comm_type', 'SB_Delay',"total_delay"])]
 k = k.loc[~k.index.duplicated(), :]
-print(k)
+#sns.relplot(data=k, x="year", y="passengers", hue="n", kind="line")
 #plt.plot(k['n'],k['total_delay'],color="red")
-k.plot(kind="line",color=['cornflowerblue','navajowhite','lightsalmon'])
+k.plot(kind="line",color=['cornflowerblue','navajowhite','lightsalmon'],linewidth="3")
 #sns.lineplot(x="n",err_style="band", ci='sd', estimator="median", data=k)
 #k.plot(k['n'],k['Border_Delay'],color="navajowhite")
 #k.plot(k['n'],k['Controller_Delay'],color="lightsalmon")
@@ -42,6 +43,6 @@ k.plot(kind="line",color=['cornflowerblue','navajowhite','lightsalmon'])
 # setting the title using Matplotlib
 #plt.ylim(0,3)
 plt.xlabel("Packets per second (pkt/s)")
-plt.ylabel("Delay (ms)")
+plt.ylabel("Delay (us)")
 
 plt.show()

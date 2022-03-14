@@ -96,14 +96,14 @@ def to_dpid(n):
 
 def border_retriever(z):
         global session,zone,border_gw,kind,target,br_delay
-        s_latency = int(round(time.time() * 1000))
+        s_latency = int(round(time.time() * 1000000))
         while True:
             replies = session.get(f"/sdn/*/BS/{z}",local_routing=False)
             for reply in replies:
                 if reply.data.payload.decode("utf-8") != "None":
                     r = json.loads(reply.data.payload.decode("utf-8"))
                     if int(r[0]["from"]) in border_gw:
-                        e_latency = int(round(time.time() * 1000))
+                        e_latency = int(round(time.time() * 1000000))
                         br_delay += e_latency - s_latency
                         return r[0]
                     else:
@@ -149,18 +149,8 @@ def instradate(src,dst,net,datapath):
     e_dst = 0
     paths_cache.setdefault(src,{})
     paths_cache.setdefault(dst,{})
-    if src in paths_cache and dst in paths_cache[src] and paths_cache[src][dst]!=[]:
-        path = paths_cache[src][dst]
-        if dpid not in path:
-            return path,0
-        if (dpid in path) and (path.index(dpid) == len(path)-1) and (dpid in border_switch):
-            return path,0
-        else:
-            
-            next=path[path.index(dpid)+1]
-            out_port=net[dpid][next]['port']
-        return path,out_port
-    s_dst = int(round(time.time() * 1000))
+    
+    s_dst = int(round(time.time() * 1000000))
     if src not in known_hosts:
         
         replies = session.get(f"/sdn/*/hosts/{src}",local_routing=False)
@@ -170,14 +160,14 @@ def instradate(src,dst,net,datapath):
             
                 src_zone = tmp["zone"]
     if dst not in known_hosts:
-        s_dst = int(round(time.time() * 1000))
+        s_dst = int(round(time.time() * 1000000))
         replies = session.get(f"/sdn/*/hosts/{dst}",local_routing=False)
         for reply in replies:
             if reply.data.payload.decode("utf-8") != "None":
                 tmp = json.loads(reply.data.payload.decode("utf-8"))
             
                 dst_zone = tmp["zone"]
-    e_dst = int(round(time.time() * 1000))
+    e_dst = int(round(time.time() * 1000000))
     host_delay = e_dst - s_dst
     if src not in net:
         if src in known_hosts and known_hosts[src]==zone:
@@ -195,24 +185,25 @@ def instradate(src,dst,net,datapath):
                 net[src][dpid]['weight'] = 10
     
     if dst in net and src in net:
-        comm_type = 2
+        comm_type = 1
         path,out_port = request_path(net,src,dst,dpid,src,dst)
     elif src not in net and dst in net:
-        comm_type = 3
+        comm_type = 2
         path,out_port = request_path(net,src,dst,dpid,dpid,dst)
         if src_zone not in border_gw:
             r = border_retriever(src_zone)
             border_gw[src_zone] = border_gw[int(r["from"])]
             session.put(basekey + f"/BS/{src_zone}",json.dumps({"via":border_gw[int(r["from"])],"from":r["from"]}))
     elif src in net and dst not in net:
-        comm_type = 4
+        comm_type = 3
         if dst_zone not in border_gw:
             r = border_retriever(dst_zone)
             border_gw[dst_zone] = border_gw[int(r["from"])]
             session.put(basekey + f"/BS/{dst_zone}",json.dumps({"via":border_gw[int(r["from"])],"from":r["from"]}))
         path,out_port = request_path(net,src,dst,dpid,src,border_gw[dst_zone])
+        del border_gw[dst_zone]
     elif src not in net and dst not in net:
-        comm_type = 5
+        comm_type = 4
         if src_zone not in border_gw:
             r = border_retriever(src_zone)
             border_gw[src_zone] = border_gw[int(r["from"])]
@@ -222,6 +213,7 @@ def instradate(src,dst,net,datapath):
             border_gw[dst_zone] = border_gw[int(r["from"])]
             session.put(basekey + f"/BS/{dst_zone}",json.dumps({"via":border_gw[int(r["from"])],"from":r["from"]}))
         path,out_port = request_path(net,src,dst,dpid,dpid,border_gw[dst_zone])
+        del border_gw[dst_zone]
     paths_cache[src][dst] = path
     if src not in net:
         path.insert(0,border_gw[src_zone])
@@ -381,11 +373,12 @@ class Controllerz1(app_manager.RyuApp):
         global border_gw,border_switch,flag,zone,zones,fast_links,br_delay,zone_delay,flag_flows
         global fast_net,slow_net,boosted,paths_cache
         global comm_type, host_delay, br_delay
-        comm_type = 1
+        comm_type = 0
         host_delay = 0
         br_delay = 0
+        
         self.topo_discovery()
-        s = int(round(time.time() * 1000))
+        s = int(round(time.time() * 1000000))
         msg = ev.msg
         datapath = msg.datapath
         ofproto = datapath.ofproto
@@ -448,32 +441,46 @@ class Controllerz1(app_manager.RyuApp):
         out_port = 0
         print(f"{dpid} sono qui")
 
-
-            
+        
+        s_f = e_f = 0 
         if mode == modes[0]:
-            path,out_port = instradate(src,dst,net,datapath)
-            datapaths = api.get_datapath(self, dpid=None)
-            for d in datapaths:
-                if to_dpid(d.id) in path:
-                    next1 = paths_cache[src][dst][paths_cache[src][dst].index(to_dpid(d.id))+1]
-                    o_port1 = net[to_dpid(d.id)][next1]['port']
-                    next2 = paths_cache[dst][src][paths_cache[dst][src].index(to_dpid(d.id))+1]
-                    o_port2 = net[to_dpid(d.id)][next2]['port']
-                    actions1 = [parser.OFPActionOutput(o_port1)]
-                    actions2 = [parser.OFPActionOutput(o_port2)]
-                    match1 = parser.OFPMatch(in_port=o_port2,eth_dst=dst, eth_src=src)
-                    #print(f"Se src: {src} e dst: {dst} in dpid: {to_dpid(d.id)} allora out: {o_port1}")
-                    #print(f"Se src: {dst} e dst: {src} in dpid: {to_dpid(d.id)} allora out: {o_port2}")
-                    match2 = parser.OFPMatch(in_port=o_port1,eth_dst=src, eth_src=dst)
-                    if msg.buffer_id != ofproto.OFP_NO_BUFFER:
-                        self.add_flow(d, 1, match2, actions2,1, msg.buffer_id)
-                        self.add_flow(d, 1, match1, actions1,1, msg.buffer_id)
-                    else:
-                        self.add_flow(d, 1, match2, actions2,1)
-                        self.add_flow(d, 1, match1, actions1,1)
-                        flows[to_dpid(d.id)].append([d,1,match1,actions1])
-                        flows[to_dpid(d.id)].append([d,1,match2,actions2])
-                    
+
+            if src in paths_cache and dst in paths_cache[src] and paths_cache[src][dst]!=[]:
+                path = paths_cache[src][dst]
+                if dpid not in path:
+                    return path,0
+                if (dpid in path) and (path.index(dpid) == len(path)-1) and (dpid in border_switch):
+                    return path,0
+                else:
+            
+                    next=path[path.index(dpid)+1]
+                    out_port=net[dpid][next]['port']
+
+            else:
+                path,out_port = instradate(src,dst,net,datapath)
+                datapaths = api.get_datapath(self, dpid=None)
+                s_f = int(round(time.time() * 1000000))
+                for d in datapaths:
+                    if to_dpid(d.id) in path:
+                        next1 = paths_cache[src][dst][paths_cache[src][dst].index(to_dpid(d.id))+1]
+                        o_port1 = net[to_dpid(d.id)][next1]['port']
+                        next2 = paths_cache[dst][src][paths_cache[dst][src].index(to_dpid(d.id))+1]
+                        o_port2 = net[to_dpid(d.id)][next2]['port']
+                        actions1 = [parser.OFPActionOutput(o_port1)]
+                        actions2 = [parser.OFPActionOutput(o_port2)]
+                        match1 = parser.OFPMatch(in_port=o_port2,eth_dst=dst, eth_src=src)
+                        #print(f"Se src: {src} e dst: {dst} in dpid: {to_dpid(d.id)} allora out: {o_port1}")
+                        #print(f"Se src: {dst} e dst: {src} in dpid: {to_dpid(d.id)} allora out: {o_port2}")
+                        match2 = parser.OFPMatch(in_port=o_port1,eth_dst=src, eth_src=dst)
+                        if msg.buffer_id != ofproto.OFP_NO_BUFFER:
+                            self.add_flow(d, 1, match2, actions2,1, msg.buffer_id)
+                            self.add_flow(d, 1, match1, actions1,1, msg.buffer_id)
+                        else:
+                            self.add_flow(d, 1, match2, actions2,1)
+                            self.add_flow(d, 1, match1, actions1,1)
+                            flows[to_dpid(d.id)].append([d,1,match1,actions1])
+                            flows[to_dpid(d.id)].append([d,1,match2,actions2])
+                e_f = int(round(time.time() * 1000000))
                     
 
                 
@@ -507,10 +514,11 @@ class Controllerz1(app_manager.RyuApp):
         out = parser.OFPPacketOut(datapath=datapath, buffer_id=msg.buffer_id,
                                   in_port=in_port, actions=actions, data=data)
         
-        e = int(round(time.time() * 1000))
+        e = int(round(time.time() * 1000000))
         f = open('data.csv', 'a')
-        tmp = e-s-br_delay-host_delay
-        row = [2,int(comm_type), host_delay, br_delay, abs(tmp)]
+        flow_delay = e_f - s_f
+        tmp = e-s-br_delay-host_delay- flow_delay
+        row = [2,int(comm_type), host_delay, br_delay,flow_delay ,abs(tmp)]
         writer = csv.writer(f)
         writer.writerow(row)
         f.close()     

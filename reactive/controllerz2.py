@@ -471,7 +471,7 @@ class Controllerz1(app_manager.RyuApp):
         e = int(round(time.time() * 1000000))
         f = open('measurements/data.csv', 'a')
         tmp = e-s-br_delay-host_delay
-        row = [2,comm_type, host_delay, br_delay, abs(tmp)]
+        row = [2000,comm_type, host_delay, br_delay, abs(tmp)]
         writer = csv.writer(f)
         writer.writerow(row)
         f.close()
