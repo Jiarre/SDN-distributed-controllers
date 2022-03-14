@@ -114,6 +114,7 @@ def border_retriever(z):
             for reply in replies:
                 if reply.data.payload.decode("utf-8") != "None":
                     r = json.loads(reply.data.payload.decode("utf-8"))
+                    print(r)
                     if int(r[0]["from"]) in border_gw:
                         e_latency = int(round(time.time() * 1000000))
                         #print(f"BR delay:{e_latency - s_latency}ms")
@@ -160,7 +161,7 @@ def instradate(src,dst,net,datapath):
     e_src = 0
     s_dst = 0
     e_dst = 0
-    
+    print(f"src: {src} -> dst: {dst}")
     s_dst = int(round(time.time() * 1000000))
     if src not in known_hosts:
         
