@@ -391,9 +391,11 @@ class Controllerz1(app_manager.RyuApp):
         flagl = 0
         flags = 0
         dpid = format(datapath.id, "d").zfill(16)
-        
+        if dst == '33:33:00:00:00:02':
+            return
         flows.setdefault(dpid,[])
         out_port = 0
+        
         if flag == 0:
             self.update_known_hosts()
             net.add_node('00:00:00:00:00:01')

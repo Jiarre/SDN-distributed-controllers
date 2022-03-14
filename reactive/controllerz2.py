@@ -388,7 +388,8 @@ class Controllerz1(app_manager.RyuApp):
         dpid = format(datapath.id, "d").zfill(16)
         flows.setdefault(dpid,[])
         out_port = 0
-
+        if dst == '33:33:00:00:00:02':
+            return
         if flag == 0:
             self.update_known_hosts()
 
