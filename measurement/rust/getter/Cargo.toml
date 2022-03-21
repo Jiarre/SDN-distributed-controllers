@@ -1,0 +1,28 @@
+[package]
+name = "getter"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+
+[dependencies]
+zenoh = { path= "/home/federico/zenoh-no-ls/zenoh/"}
+async-std = { version = "=1.10.0", default-features = false, features = [
+	"attributes",
+] }
+clap = "2.33.3"
+env_logger = "0.9.0"
+futures = "0.3.12"
+git-version = "0.3.4"
+json5 = "0.4.1"
+log = "0.4"
+validated_struct = { version = "0.1", features = ["json5", "serde_json"] }
+csv = "1.0.0-beta.2"
+rand = "0.8.3"
+
+[dev-dependencies]
+rand = "0.8.3"
+
+[build-dependencies]
+rustc_version = "0.4.0"
