@@ -2567,6 +2567,7 @@ dependencies = [
 name = "zenoh-transport"
 version = "0.6.0-dev.0"
 dependencies = [
+ "async-executor",
  "async-global-executor",
  "async-std",
  "async-trait",

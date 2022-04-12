@@ -1,54 +1,71 @@
 use clap::{App, Arg};
 use futures::prelude::*;
+use rand::prelude::*;
+use std::mem;
+use std::time::{Duration, Instant};
+use std::{thread, time};
 use zenoh::config::Config;
 use zenoh::prelude::*;
 use zenoh::query::*;
 use zenoh::queryable;
-use std::time::{Duration, Instant};
-use std::{thread, time};
-use std::mem;
-use rand::prelude::*;
+use zenoh::publication::CongestionControl;
 
-use std::error::Error;
+use zenoh::prelude::config::WhatAmI;
+
 use csv::Writer;
+use std::error::Error;
 
 #[async_std::main]
 async fn main() {
     // initiate logging
     env_logger::init();
 
-    let (config, selector, target,peers,getters,delay) = parse_args();
+    let (config, selector, target, peers, getters, delay, size) = parse_args();
 
     let session = zenoh::open(config).await.unwrap();
-    let init = time::Duration::from_secs(3);
-    thread::sleep(init);
+    let init = time::Duration::from_secs(10);
+    async_std::task::sleep(init);
     let mut rng = rand::thread_rng();
-    loop{
+
+    loop {
+        let query_consolidation = QueryConsolidation::Manual(ConsolidationStrategy::none());
+
         let d = time::Duration::from_micros(delay.try_into().unwrap());
-        thread::sleep(d);
+        async_std::task::sleep(d).await;
         let kind = queryable::ALL_KINDS;
         let target = Target::All;
-        let s = QueryTarget { kind,target  };
-        let zo = rng.gen_range(1..=peers.parse().unwrap());
-        let key_expr = format!("/sdn/**/hosts/{}",zo);
+        let s = QueryTarget { kind, target };
+        //let zo = rng.gen_range(1..=peers.parse().unwrap());
+        //let key_expr = format!("/sdn/**/hosts/{}", zo);
+        let key_expr = "/sdn/**/hosts/1".to_string(); // /sdn/zone{n}/hosts/1
         let now = Instant::now();
-        let mut replies = session.get(&key_expr).target(s).await.unwrap();
-        let el = now.elapsed().as_micros();
+        let mut replies = session.get(&key_expr).consolidation(query_consolidation).target(s).await.unwrap();
         let mut x = 0;
-        
-        if let Some(reply) = replies.next().await {
-
-             x = mem::size_of_val(&reply.data.value.payload.contiguous());
-            // print!("res:  {:?}",String::from_utf8_lossy(&reply.data.value.payload.contiguous()));
-
+        let mut flag = 0;
+        let mut first = 0;
+        while let Some(reply) = replies.next().await {
+            
+            let el = now.elapsed().as_micros();
+            if reply.data.value.payload.contiguous().len() > 0 {
+                if flag == 0 {
+                    first = now.elapsed().as_micros();
+                    flag = 1;
+                }   
+                //println!("{},{},{},{},{},{:?}", &getters, &peers, delay, size, x, el);
+                //x = 1;
+                //print!("res:  {:?}",String::from_utf8_lossy(&reply.data.value.payload.contiguous()));
+            }
         }
-        println!("{},{},{},{},{:?}",&getters,&peers,delay,x,el);
+        if flag == 1{
+            let el2 = now.elapsed().as_micros();
+            println!("{},{},{},{},{},{:?}", &getters, &peers, delay, size, x, el2-first);
+        }
+        
+        //println!("{},{},{},{},{},{:?}",&getters,&peers,delay,size,x,el);
     }
-    
-    
 }
 
-fn parse_args() -> (Config, String, QueryTarget, String, String, i32) {
+fn parse_args() -> (Config, String, QueryTarget, String, String, i32, usize) {
     let args = App::new("zenoh query example")
         .arg(
             Arg::from_usage("-m, --mode=[MODE]  'The zenoh session mode (peer by default).")
@@ -88,6 +105,9 @@ fn parse_args() -> (Config, String, QueryTarget, String, String, i32) {
         ))
         .arg(Arg::from_usage(
             "--delay=[NPEER] 'Disable the multicast-based scouting mechanism.'",
+        ))
+        .arg(Arg::from_usage(
+            " --size==[ZONE] 'Disable the multicast-based scouting mechanism.'",
         ))
         .get_matches();
 
@@ -132,5 +152,14 @@ fn parse_args() -> (Config, String, QueryTarget, String, String, i32) {
     let delay = args.value_of("delay").unwrap();
     let peers = args.value_of("peers").unwrap().to_string();
     let getters = args.value_of("getters").unwrap().to_string();
-    (config, selector, QueryTarget { kind, target },peers,getters,delay.parse().unwrap())
+    let size = args.value_of("size").unwrap().parse::<usize>().unwrap();
+    (
+        config,
+        selector,
+        QueryTarget { kind, target },
+        peers,
+        getters,
+        delay.parse().unwrap(),
+        size,
+    )
 }

@@ -4,17 +4,24 @@
 {
   
   transport: {
-    link: {
-      batch_size: 65535,
-      /// Link lease duration in milliseconds, into = usize_to_cowstr, from = usize_from_str
-      lease: 10000,
+    unicast: {
+      /// Timeout in milliseconds when opening a link
+      accept_timeout: 10000,
+      accept_pending: 100 ,
+      max_sessions: 2048,
+      max_links: 1,
+    },
+    multicast: {
       /// Link keep-alive duration in milliseconds
-      keep_alive: 2500,
+      join_interval: 2500,
+      max_sessions: 2048,
+    },
+    link: {
       /// Receiving buffer size for each link
-      rx_buffer_size: 65535,
+      rx_buffer_size: 262144 ,
       /// Maximum size of the defragmentation buffer at receiver end.
       /// Fragmented messages that are larger than the configured size will be dropped.
-      defrag_buffer_size: 65535,
+      defrag_buffer_size: 1073741824
       
     },
     

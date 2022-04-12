@@ -25,6 +25,8 @@ use zenoh::prelude::*;
 use zenoh::queryable::STORAGE;
 use zenoh::utils::key_expr;
 use rand::prelude::*;
+use zenoh::publication::CongestionControl;
+
 
 
 #[async_std::main]
@@ -35,7 +37,7 @@ async fn main() {
 
 
 
-    let (config, key_expr, zone) = parse_args();
+    let (config, key_expr, zone,size) = parse_args();
 
     let mut stored: HashMap<String, Sample> = HashMap::new();
 
@@ -45,9 +47,14 @@ async fn main() {
 
     let mut queryable = session.queryable(&key_expr).kind(STORAGE).await.unwrap();
     let mut rng = rand::thread_rng();
+    let data: Value = (0usize..size)
+        .map(|i| (i % 10) as u8)
+        .collect::<Vec<u8>>()
+        .into();
 
-    session.put(&key_expr, format!("{{'zone':'zone{}','ip':'{}.{}.{}.{}'}}",zone,rng.gen_range(0..255),rng.gen_range(0..255),rng.gen_range(0..255),rng.gen_range(0..255))).await.unwrap();
 
+    //session.put(&key_expr, format!("{{'zone':'zone{}','ip':'{}.{}.{}.{}'}}",zone,rng.gen_range(0..255),rng.gen_range(0..255),rng.gen_range(0..255),rng.gen_range(0..255))).await.unwrap();
+    session.put(&key_expr, data).congestion_control(CongestionControl::Block).await.unwrap();
     
     loop {
         select!(
@@ -65,6 +72,9 @@ async fn main() {
                 let query = query.unwrap();
                 for (stored_name, sample) in stored.iter() {
                     if key_expr::intersect(query.selector().key_selector.as_str(), stored_name) {
+                        /*for i in 1..=100 {
+                        query.reply(sample.clone());
+                        }*/
                         query.reply(sample.clone());
                     }
                 }
@@ -73,7 +83,7 @@ async fn main() {
     }
 }
 
-fn parse_args() -> (Config, String, String) {
+fn parse_args() -> (Config, String, String,usize) {
     let args = App::new("zenoh storage example")
         .arg(
             Arg::from_usage("-m, --mode=[MODE]  'The zenoh session mode (peer by default).")
@@ -98,6 +108,9 @@ fn parse_args() -> (Config, String, String) {
         .arg(Arg::from_usage(
             "-z, --zone==[ZONE] 'Disable the multicast-based scouting mechanism.'",
         ))
+        .arg(Arg::from_usage(
+            " --size==[ZONE] 'Disable the multicast-based scouting mechanism.'",
+        ))
         .get_matches();
 
     let mut config = if let Some(conf_file) = args.value_of("config") {
@@ -108,7 +121,7 @@ fn parse_args() -> (Config, String, String) {
     if let Some(Ok(mode)) = args.value_of("mode").map(|mode| mode.parse()) {
         config.set_mode(Some(mode)).unwrap();
     }
-    if let Some(values) = args.values_of("connect") {
+    /*if let Some(values) = args.values_of("connect") {
        
         let x = args.value_of("connect").unwrap();
         let y = x.parse::<i32>().unwrap();
@@ -116,11 +129,16 @@ fn parse_args() -> (Config, String, String) {
         for i in 1..=y{
             getters.push(format!("tcp/0.0.0.0:{}",32769+i).parse().unwrap());
         }
-        print!("{:?}",&getters);
         config
             .connect
             .endpoints
             .extend(getters)
+    }*/
+    if let Some(values) = args.values_of("connect") {
+        config
+            .connect
+            .endpoints
+            .extend(values.map(|v| v.parse().unwrap()))
     }
     if let Some(values) = args.values_of("listen") {
         config
@@ -134,7 +152,11 @@ fn parse_args() -> (Config, String, String) {
 
     
     let zone = args.value_of("zone").unwrap().to_string();
-    let key_expr = format!("/sdn/zone{}/hosts/{}",zone,zone);
-
-    (config, key_expr, zone)
+    let key_expr = format!("/sdn/zone{}/hosts/1",zone);
+    let size = args
+        .value_of("size")
+        .unwrap()
+        .parse::<usize>()
+        .unwrap();
+    (config, key_expr, zone,size)
 }
