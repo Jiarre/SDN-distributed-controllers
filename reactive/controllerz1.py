@@ -232,10 +232,10 @@ sub1 = session.subscribe("/sdn/host-pkt/**",topology_update,reliability=Reliabil
 
 store = {}
 sub = session.subscribe(basekey + "/hosts/**", listener, reliability=Reliability.Reliable, mode=SubMode.Push)
-queryable = session.queryable(basekey + "/hosts/**", STORAGE, query_handler)
+queryable = session.queryable(basekey + "/hosts/**",STORAGE, query_handler)
 store_bs = {}
 sub_bs = session.subscribe(basekey + "/BS/**", listener_bs, reliability=Reliability.Reliable, mode=SubMode.Push)
-queryable_bs = session.queryable(basekey + "/BS/**", STORAGE, query_handler_bs)
+queryable_bs = session.queryable(basekey + "/BS/**",  STORAGE,query_handler_bs)
 boosted = []
 paths_cache = {}
 mac_to_port = {}
