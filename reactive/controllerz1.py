@@ -472,7 +472,7 @@ class Controllerz1(app_manager.RyuApp):
                                   in_port=in_port, actions=actions, data=data)
         e = int(round(time.time() * 1000000))
         tmp = e-s-br_delay-host_delay
-        print("{},{},{},{},{}",2000,comm_type, host_delay, br_delay, abs(tmp))
+        print(f"{},{},{},{},{}",2000,comm_type, host_delay, br_delay, abs(tmp))
         
         datapath.send_msg(out)
         
