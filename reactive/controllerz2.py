@@ -54,8 +54,7 @@ def known_hosts_update(hosts):
     for host in kh:
         if kh[host] not in known_hosts:
             known_hosts[host] = kh[host]
-    print("C2 Updated kh")
-    print(known_hosts)
+
 
 def listener_dispatcher(msg):
     if str(msg.key_expr)=="/sdn/host-pkt":
@@ -160,7 +159,6 @@ def instradate(src,dst,net,datapath):
     e_src = 0
     s_dst = 0
     e_dst = 0
-    print(f"src: {src} -> dst: {dst}")
     s_dst = int(round(time.time() * 1000000))
     if src not in known_hosts:
         
@@ -343,7 +341,6 @@ class Controllerz1(app_manager.RyuApp):
                 mod = parser.OFPFlowMod(datapath=f[0], table_id=0, cookie=1,
                 command=f[0].ofproto.OFPFC_DELETE, priority=f[1], match=match, out_port= ofproto.OFPP_ANY, out_group=ofproto.OFPG_ANY)
                 f[0].send_msg(mod)
-        print("Flows C2 puliti")
         flows = {}
 
     def host_pkt_handler(self,msg):
@@ -474,12 +471,10 @@ class Controllerz1(app_manager.RyuApp):
         out = parser.OFPPacketOut(datapath=datapath, buffer_id=msg.buffer_id,
                                   in_port=in_port, actions=actions, data=data)
         e = int(round(time.time() * 1000000))
-        f = open('measurements/data.csv', 'a')
+        
         tmp = e-s-br_delay-host_delay
-        row = [2000,comm_type, host_delay, br_delay, abs(tmp)]
-        writer = csv.writer(f)
-        writer.writerow(row)
-        f.close()
+        print(f"{},{},{},{},{}",2000,comm_type, host_delay, br_delay, abs(tmp))
+        
         datapath.send_msg(out)
         
 

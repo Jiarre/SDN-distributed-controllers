@@ -51,8 +51,7 @@ def known_hosts_update(hosts):
     for host in kh:
         if kh[host] not in known_hosts:
             known_hosts[host] = kh[host]
-    print("C1 Updated kh")
-    print(known_hosts)
+
 
     
 
@@ -107,7 +106,6 @@ def border_retriever(z):
                         br_delay += e_latency - s_latency
                         return r[0]
                     else:
-                        print(f"reaching zone {z} from zone {r['from']}")
                         z = int(r[0]["from"])
                         break
 
@@ -218,7 +216,6 @@ def instradate(src,dst,net,datapath):
     if src not in net:
         path.insert(0,border_gw[src_zone])
     paths_cache[dst][src] = path[::-1] 
-    print(f"path {path} \n reverse {path[::-1]}")
 
     return path,out_port
 
@@ -347,7 +344,6 @@ class Controllerz1(app_manager.RyuApp):
                 mod = parser.OFPFlowMod(datapath=f[0], table_id=0, cookie=1,
                 command=f[0].ofproto.OFPFC_DELETE, priority=f[1], match=match, out_port= ofproto.OFPP_ANY, out_group=ofproto.OFPG_ANY)
                 f[0].send_msg(mod)
-        print("Flows C1 puliti")
         flows = {}
 
     def host_pkt_handler(self,msg):
@@ -439,7 +435,6 @@ class Controllerz1(app_manager.RyuApp):
         self.topo_discovery()
         path = []
         out_port = 0
-        print(f"{dpid} sono qui")
 
         
         s_f = e_f = 0 
@@ -515,13 +510,10 @@ class Controllerz1(app_manager.RyuApp):
                                   in_port=in_port, actions=actions, data=data)
         
         e = int(round(time.time() * 1000000))
-        f = open('data.csv', 'a')
         flow_delay = e_f - s_f
         tmp = e-s-br_delay-host_delay- flow_delay
-        row = [2,int(comm_type), host_delay, br_delay,flow_delay ,abs(tmp)]
-        writer = csv.writer(f)
-        writer.writerow(row)
-        f.close()     
+        print("{},{},{},{},{},{}",2,int(comm_type), host_delay, br_delay,flow_delay ,abs(tmp))
+          
         datapath.send_msg(out)
 
     @set_ev_cls(event.EventSwitchEnter)
